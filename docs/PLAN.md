@@ -40,7 +40,7 @@ Build output never goes in the repo: `~/Downloads/dockfix-build/` (app, archive 
 - **Repair is manual.** The agent never edits Dock preferences. An offline drive must not be "repaired" to a different copy (x10 had duplicate copies of XIV on Mac and FFXI-on-Mac), so `TileStatus` reports `driveNotConnected` for paths on unmounted `/Volumes/<name>` and offers no repair.
 - **Undo** keeps one backup: the repaired item's original dictionary (found again by GUID). Undo replaces only that item, so later Dock changes survive. The first version restored the whole section; review caught that it would wipe later changes.
 - **The Dock rewrites its item list ~5 s after it starts** (measured: it adds file-mod-date, parent-mod-date, dock-extra, is-beta). An edit made in that window is silently lost; the first test run hit it. `DockEditor` waits until the Dock is 8 s old before writing, restarts it, waits again, checks the item points where intended, and writes once more if not.
-- **Status distinguishes "absent" from "can't read"** (`FileCheck`: only ENOENT/ENOTDIR are absent; any other errno → `noAccess` with that errno), so a drive DockFix can't read is never treated as missing and "repaired" to another copy. The message names the cause: EPERM → macOS privacy settings, EACCES → folder permissions, anything else (EIO, ETIMEDOUT, …) → the drive didn't respond. Bookmarks resolving into a Trash don't count as "moved".
+- **Status distinguishes "absent" from "can't read"** (`FileCheck`: only ENOENT/ENOTDIR are absent; any other errno → `noAccess` with that errno), so a drive DockFix can't read is never treated as missing and "repaired" to another copy. The message names the cause: EPERM → macOS privacy settings, EACCES → folder permissions (naming the first folder on the path DockFix can't enter), anything else (EIO, ETIMEDOUT, …) → the drive didn't respond. Bookmarks resolving into a Trash don't count as "moved".
 
 ## Verified (2026-10-08, macOS 27.0.1)
 
@@ -66,6 +66,7 @@ Build output never goes in the repo: `~/Downloads/dockfix-build/` (app, archive 
 | Round 3: two copies started in the same instant, 10 runs → exactly one survivor every time | pass |
 | Round 3: `install.sh` re-registers switched-on jobs (new `--launch-menubar` definition loaded), Dock not restarted | pass |
 | Round 3: chmod 000 folder → NO ACCESS "Folder permissions on “locked” …"; `--repair` refuses | pass |
+| Round 4: item in `locked/Games/` with `locked` chmod 000 → names “locked” (not “Games”); window shows the full advice | pass |
 
 Not verified by machine: real mouse clicks in the panel/window (the same model calls were exercised), a real logout/login (simulated with `launchctl kickstart gui/$UID/org.batesai.dockfix.menubar`), a bare second launch asking the running copy to show its window (it would take focus), and the EIO/ETIMEDOUT message (needs a failing drive).
 
@@ -102,6 +103,13 @@ Round 3 reviewed the round-2 fix commit (one reviewer + one skeptic; all 6 findi
 | install.sh `pkill -f` pattern matched any command line ending in `/DockFix` | PIDs from LaunchServices by bundle ID (`lsappinfo`) |
 | "can't read" text blamed privacy settings for I/O errors too | message per errno (privacy, folder permissions, read error) in window and CLI |
 | TESTING.md single-instance step couldn't fail (kickstart never starts a second copy) | real second launches and a simultaneous-start test |
+
+Round 4 (one reviewer, self-verified) on the round-3 commit found no logic bugs in the launcher, lock, login item, CLI or install.sh; two text issues were fixed:
+
+| Finding | Fix |
+|---|---|
+| Privacy-settings advice was cut off on the window's one-line detail | advice wraps (up to 4 lines); paths stay one line |
+| "Folder permissions on X" named the item's parent, not the folder that blocks access | walks the path to the first folder DockFix can't enter |
 
 ## Known limits
 

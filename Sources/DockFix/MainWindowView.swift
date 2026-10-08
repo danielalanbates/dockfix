@@ -135,7 +135,12 @@ struct RowView: View {
                 Text(row.tile.name)
                 Text(row.tile.path ?? "").font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle)
-                if let detail { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
+                if let detail {
+                    // Paths stay on one line; the "can't read" advice wraps so it is never cut off.
+                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(row.status.accessProblem == nil ? 1 : 4).truncationMode(.middle)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer()
             Text(row.status.label).font(.callout).foregroundStyle(color)

@@ -68,8 +68,10 @@ enum TileStatus: Equatable {
         case .exists:
             return .ok
         case .unreadable(let error):
-            return .noAccess(Volumes.volumeRoot(of: path).map { ($0 as NSString).lastPathComponent }
-                             ?? ((path as NSString).deletingLastPathComponent as NSString).lastPathComponent, error)
+            // For folder permissions, name the folder that actually blocks the way.
+            let place = (error == EACCES ? blockedFolder(on: path) : nil)
+                ?? Volumes.volumeRoot(of: path) ?? (path as NSString).deletingLastPathComponent
+            return .noAccess((place as NSString).lastPathComponent, error)
         case .absent:
             break
         }
@@ -83,6 +85,16 @@ enum TileStatus: Equatable {
             return .driveNotConnected((volume as NSString).lastPathComponent)
         }
         return .missing
+    }
+
+    /// The first folder on the way to `path` that DockFix may not look into.
+    private static func blockedFolder(on path: String) -> String? {
+        var folder = ""
+        for component in (path as NSString).deletingLastPathComponent.split(separator: "/") {
+            folder += "/" + component
+            if access(folder, X_OK) != 0 { return folder }
+        }
+        return nil
     }
 
     private static func resolve(_ bookmark: Data?) -> String? {

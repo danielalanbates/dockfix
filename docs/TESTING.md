@@ -41,7 +41,7 @@ Detach the test image, remove the test tile and `killall Dock`, then attach the 
 | `killall Dock` then at once `$D --repair …` on the broken tile | waits for the Dock to settle (~16 s), then OK and still OK 8 s later |
 | export the Dock prefs, `$D --undo-repair`, export again | only the test item differs; MISSING again; a second undo prints "There is no earlier repair to undo." |
 | copy the app to `/Volumes/DockFixTest/Moved/`, add the tile there, move the copy into `/Volumes/DockFixTest/.Trashes/501/` | MISSING (not MOVED), offering the real copy |
-| tile inside a folder with `chmod 000` | NO ACCESS "Folder permissions on …"; `--repair` refuses |
+| tile in `locked/Games/` with `chmod 000 locked` | NO ACCESS "Folder permissions on “locked” …" (not “Games”); `--repair` refuses; window row shows the full text |
 | tile on the test image, image detached | OFFLINE; `--repair` refuses |
 | `scripts/render_previews.sh repair` | renders the panel/window with a Repair button, then repairs through the model: "after repair: broken = 0" |
 
