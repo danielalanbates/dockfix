@@ -51,7 +51,7 @@ scripts/build.sh                              # → ~/Downloads/dockfix-build/Do
 scripts/install.sh --enable                   # → /Applications, switches on, menu bar app started
 ```
 
-`install.sh` archives the copy it replaces into `~/Downloads/dockfix-build/archive/` and replaces the bundle in place, so Login Items registrations survive updates.
+`install.sh` archives the copy it replaces into `~/Downloads/dockfix-build/archive/`, replaces the bundle in place, and registers the switched-on launchd jobs again so launchd loads their updated definitions.
 
 ## Command line
 
@@ -65,6 +65,7 @@ scripts/install.sh --enable                   # → /Applications, switches on, 
   --repair NAME [PATH]  repoint a broken Dock item (default: the copy its bookmark or bundle ID finds)
   --undo-repair         put the last repaired item back as it was (other items untouched)
   --menubar             start the menu bar app without opening the window
+  --launch-menubar      start the menu bar app unless it's running, then exit (what Open at Login runs)
 ```
 
 ## Uninstall

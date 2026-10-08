@@ -47,24 +47,32 @@ enum AgentService {
 
     /// A second bundled job that starts the menu bar app with --menubar, so no window opens at login.
     /// (SMAppService.mainApp can't pass arguments, and its "launched at login" flag isn't dependable.)
+    /// The job runs `DockFix --launch-menubar`, which starts the app and exits (see LoginLauncher).
     static let loginPlistName = "org.batesai.dockfix.menubar.plist"
     static var loginItem: SMAppService { SMAppService.agent(plistName: loginPlistName) }
-    static var opensAtLogin: Bool { loginItem.status == .enabled }
+    /// On while the job is registered, or while a login item from an older build still opens the app.
+    static var opensAtLogin: Bool { loginItem.status == .enabled || SMAppService.mainApp.status == .enabled }
+    static var openAtLoginNeedsApproval: Bool { loginItem.status == .requiresApproval }
+
+    static var openAtLoginDescription: String {
+        opensAtLogin ? "on" : openAtLoginNeedsApproval ? State.needsApproval.description : "off"
+    }
 
     static func setOpenAtLogin(_ enabled: Bool) throws {
-        retireMainAppLoginItem()
         if enabled {
-            try loginItem.register()
+            if loginItem.status != .enabled { try loginItem.register() }
+            // Retire the old login item only once the job is sure to start the app instead.
+            if loginItem.status == .enabled { retireMainAppLoginItem() }
         } else {
-            try loginItem.unregister()
+            retireMainAppLoginItem()
+            if loginItem.status == .enabled || loginItem.status == .requiresApproval { try loginItem.unregister() }
         }
     }
 
     /// Builds before 2026-10-08 evening registered the app itself as the login item; move to the job above.
     static func migrateLoginItem() {
         guard SMAppService.mainApp.status == .enabled else { return }
-        retireMainAppLoginItem()
-        try? loginItem.register()
+        try? setOpenAtLogin(true)
     }
 
     private static func retireMainAppLoginItem() {

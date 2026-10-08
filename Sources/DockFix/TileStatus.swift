@@ -8,9 +8,10 @@ enum TileStatus: Equatable {
     case ok
     /// The item lives on a drive that is not connected. Nothing to repair; it comes back with the drive.
     case driveNotConnected(String)
-    /// DockFix can't read the item's drive or folder (permissions, privacy settings, or a failing or
-    /// unreachable drive). The Dock itself may be fine, and DockFix must not "repair" it to another copy.
-    case noAccess(String)
+    /// DockFix can't read the item's drive or folder (privacy settings, folder permissions, or a failing
+    /// or unreachable drive), with the errno. The Dock itself may be fine, and DockFix must not
+    /// "repair" it to another copy.
+    case noAccess(String, Int32)
     /// The saved path is gone but the Dock's bookmark still finds this exact item at a new path.
     case moved(String)
     /// Gone from where the Dock expects it.
@@ -30,7 +31,7 @@ enum TileStatus: Equatable {
         switch self {
         case .ok: return "OK"
         case .driveNotConnected: return "OFFLINE"
-        case .noAccess: return "NO ACCESS"
+        case .noAccess(_, let error): return error == EPERM || error == EACCES ? "NO ACCESS" : "READ ERR"
         case .moved: return "MOVED"
         case .missing: return "MISSING"
         case .notAFile: return ""
@@ -41,10 +42,23 @@ enum TileStatus: Equatable {
         switch self {
         case .ok: return "OK"
         case .driveNotConnected(let drive): return "Drive “\(drive)” not connected"
-        case .noAccess(let place): return "DockFix can't read “\(place)”"
+        case .noAccess(let place, _): return "DockFix can't read “\(place)”"
         case .moved: return "Moved"
         case .missing: return "Missing"
         case .notAFile: return ""
+        }
+    }
+
+    /// Why DockFix can't read the item (nil unless .noAccess).
+    var accessProblem: String? {
+        guard case .noAccess(let place, let error) = self else { return nil }
+        switch error {
+        case EPERM:
+            return "macOS privacy settings keep DockFix out of “\(place)”. Allow it in System Settings › Privacy & Security (Files and Folders or Full Disk Access)."
+        case EACCES:
+            return "Folder permissions on “\(place)” keep DockFix from checking this item."
+        default:
+            return "“\(place)” didn't respond or returned a read error (\(String(cString: strerror(error))))."
         }
     }
 
@@ -53,9 +67,9 @@ enum TileStatus: Equatable {
         switch FileCheck.check(path) {
         case .exists:
             return .ok
-        case .unreadable:
+        case .unreadable(let error):
             return .noAccess(Volumes.volumeRoot(of: path).map { ($0 as NSString).lastPathComponent }
-                             ?? ((path as NSString).deletingLastPathComponent as NSString).lastPathComponent)
+                             ?? ((path as NSString).deletingLastPathComponent as NSString).lastPathComponent, error)
         case .absent:
             break
         }
@@ -81,9 +95,10 @@ enum TileStatus: Equatable {
 }
 
 /// Tells "not there" apart from "can't look" — FileManager.fileExists reports both as false.
-enum FileCheck {
-    /// `unreadable`: permissions, privacy settings, or a failing/unreachable drive (EIO, ETIMEDOUT, …).
-    case exists, absent, unreadable
+enum FileCheck: Equatable {
+    /// `unreadable`: privacy settings (EPERM), folder permissions (EACCES), or a failing or unreachable
+    /// drive (EIO, ETIMEDOUT, …), with the errno.
+    case exists, absent, unreadable(Int32)
 
     static func check(_ path: String) -> FileCheck {
         var info = stat()
@@ -91,7 +106,7 @@ enum FileCheck {
         let error = errno
         if result == 0 { return .exists }
         // Only "no such file" means absent; anything else must never lead to a repair.
-        return error == ENOENT || error == ENOTDIR ? .absent : .unreadable
+        return error == ENOENT || error == ENOTDIR ? .absent : .unreadable(error)
     }
 }
 

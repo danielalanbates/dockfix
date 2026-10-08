@@ -135,6 +135,10 @@ final class Model: ObservableObject {
             note = "Could not change Open at Login: \(error.localizedDescription)"
         }
         openAtLogin = AgentService.opensAtLogin
+        if enabled && AgentService.openAtLoginNeedsApproval {
+            note = "Allow DockFix in System Settings › General › Login Items to finish turning on Open at Login."
+            AgentService.openLoginItemsSettings()
+        }
     }
 
     func repair(_ row: Row, to path: String) {

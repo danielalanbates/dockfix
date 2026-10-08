@@ -24,21 +24,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static let showWindowNotification = Notification.Name("org.batesai.dockfix.showWindow")
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        // One copy only. The login job starts DockFix with --menubar even if it's already running
-        // (e.g. right after "Open at login" is switched on); a copy opened by hand asks the running
-        // one to show its window.
-        let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
-            .filter { $0.processIdentifier != getpid() && $0.activationPolicy != .prohibited }
-        if !others.isEmpty {
+        // Listen before taking the lock, so a copy that loses can't ask before the winner listens.
+        let observer = DistributedNotificationCenter.default().addObserver(
+            forName: Self.showWindowNotification, object: nil, queue: .main) { _ in
+            Task { @MainActor in MainWindow.shared.show() }
+        }
+        // One copy only. A copy started while one runs exits; if it was opened by hand (not with
+        // --menubar), it first asks the running one to show its window.
+        guard InstanceLock.acquire() else {
+            DistributedNotificationCenter.default().removeObserver(observer)
             if !CommandLine.arguments.contains("--menubar") {
                 DistributedNotificationCenter.default().postNotificationName(
                     Self.showWindowNotification, object: nil, userInfo: nil, deliverImmediately: true)
             }
             exit(0)
-        }
-        DistributedNotificationCenter.default().addObserver(
-            forName: Self.showWindowNotification, object: nil, queue: .main) { _ in
-            Task { @MainActor in MainWindow.shared.show() }
         }
     }
 

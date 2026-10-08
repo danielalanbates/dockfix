@@ -40,7 +40,7 @@ Build output never goes in the repo: `~/Downloads/dockfix-build/` (app, archive 
 - **Repair is manual.** The agent never edits Dock preferences. An offline drive must not be "repaired" to a different copy (x10 had duplicate copies of XIV on Mac and FFXI-on-Mac), so `TileStatus` reports `driveNotConnected` for paths on unmounted `/Volumes/<name>` and offers no repair.
 - **Undo** keeps one backup: the repaired item's original dictionary (found again by GUID). Undo replaces only that item, so later Dock changes survive. The first version restored the whole section; review caught that it would wipe later changes.
 - **The Dock rewrites its item list ~5 s after it starts** (measured: it adds file-mod-date, parent-mod-date, dock-extra, is-beta). An edit made in that window is silently lost; the first test run hit it. `DockEditor` waits until the Dock is 8 s old before writing, restarts it, waits again, checks the item points where intended, and writes once more if not.
-- **Status distinguishes "absent" from "not allowed"** (`FileCheck`, errno EACCES/EPERM → `noAccess`), so a drive DockFix can't read is never treated as missing and "repaired" to another copy. Bookmarks resolving into a Trash don't count as "moved".
+- **Status distinguishes "absent" from "can't read"** (`FileCheck`: only ENOENT/ENOTDIR are absent; any other errno → `noAccess` with that errno), so a drive DockFix can't read is never treated as missing and "repaired" to another copy. The message names the cause: EPERM → macOS privacy settings, EACCES → folder permissions, anything else (EIO, ETIMEDOUT, …) → the drive didn't respond. Bookmarks resolving into a Trash don't count as "moved".
 
 ## Verified (2026-10-08, macOS 27.0.1)
 
@@ -61,10 +61,18 @@ Build output never goes in the repo: `~/Downloads/dockfix-build/` (app, archive 
 | Undo changes only the repaired item (full persistent-apps diff) | pass |
 | `--repair` refuses OK items, items on a disconnected drive, and unreadable (chmod 000) folders | pass |
 | Bookmark resolving into `.Trashes` → MISSING with the real copy offered, not "moved to Trash" | pass |
+| Round 3: login job started the app (ppid 1, `--menubar`, no window, job exited 0); Open at Login off → app keeps running; on again → still one copy, no window | pass |
+| Round 3: second copy via direct exec, `open -n`, and `--launch-menubar` while running → each exits, one copy left | pass |
+| Round 3: two copies started in the same instant, 10 runs → exactly one survivor every time | pass |
+| Round 3: `install.sh` re-registers switched-on jobs (new `--launch-menubar` definition loaded), Dock not restarted | pass |
+| Round 3: chmod 000 folder → NO ACCESS "Folder permissions on “locked” …"; `--repair` refuses | pass |
 
-Not verified by machine: real mouse clicks in the panel/window (the same model calls were exercised), and a real logout/login. A login launch was simulated with `launchctl kickstart gui/$UID/org.batesai.dockfix.menubar`: one instance, `--menubar`, no window, menu bar icon present.
+Not verified by machine: real mouse clicks in the panel/window (the same model calls were exercised), a real logout/login (simulated with `launchctl kickstart gui/$UID/org.batesai.dockfix.menubar`), a bare second launch asking the running copy to show its window (it would take focus), and the EIO/ETIMEDOUT message (needs a failing drive).
 
-- **Open at Login is a second bundled LaunchAgent** (`org.batesai.dockfix.menubar`, `ProgramArguments` = `DockFix --menubar`), not `SMAppService.mainApp`: mainApp can't pass arguments and its "launched as login item" Apple-event flag isn't dependable, so the window could open at every login. Registering the job runs it at once (RunAtLoad); a second copy finds the first via `NSRunningApplication` and exits. A copy opened by hand while one runs posts a distributed notification so the running one shows its window. Builds that registered mainApp are migrated on launch (`AgentService.migrateLoginItem`).
+- **Open at Login is a second bundled LaunchAgent** (`org.batesai.dockfix.menubar`), not `SMAppService.mainApp`: mainApp can't pass arguments and its "launched as login item" Apple-event flag isn't dependable, so the window could open at every login. The job runs `DockFix --launch-menubar` (`LoginLauncher`), which starts the app through LaunchServices with `--menubar` and exits. The app must never be the job's own process: unregistering a job (Open at Login off) kills its running process, which round 3 caught. Registering the job runs it at once (RunAtLoad); the launcher does nothing if the app already runs, since opening a running app sends a reopen event that would open its window.
+- **One copy via an flock** (`InstanceLock`, `~/Library/Caches/org.batesai.dockfix/menubar.lock`, held for the app's lifetime). The first version checked `NSRunningApplication`; two copies starting together could both see each other and both exit. A copy opened by hand while one runs posts a distributed notification so the running one shows its window (the observer is added before the lock is taken, so the request can't arrive before anyone listens).
+- **Login item migration** from builds that registered mainApp: the job is registered first and mainApp is retired only once the job is enabled, so a job stuck at "needs approval" can't silently lose Open at Login.
+- **launchd keeps a registered job's old definition** until it is registered again (seen when the login job's arguments changed). `install.sh` re-registers the jobs that are on, after quitting the app.
 - **Mount checks use the kernel's cached mount table** (`getfsstat(MNT_NOWAIT)`), never `statfs()` per volume, so a dead network share can't stall the check.
 
 ## Review (2026-10-08)
@@ -83,6 +91,17 @@ Round 2 reviewed the fix commit (one reviewer + one skeptic; all 8 findings conf
 | `statfs` on every /Volumes entry could block on dead shares | cached mount table (`getfsstat MNT_NOWAIT`) |
 | Settle wait unbounded if the clock moved back | capped at 8 s |
 | Preview harness could snapshot before rows loaded | `Model.loading` flag |
+
+Round 3 reviewed the round-2 fix commit (one reviewer + one skeptic; all 6 findings confirmed and fixed):
+
+| Finding | Fix |
+|---|---|
+| Open at Login off killed the menu bar app whenever the login job had started it (unregister kills the job's process) | job runs `--launch-menubar`, which starts the app via LaunchServices and exits |
+| Single-instance check could leave zero copies when two started together | flock held for the app's lifetime |
+| Migration retired the working mainApp login item before the job was confirmed; no approval prompt for Open at Login | register first, retire mainApp only when enabled; "needs approval" opens Login Items |
+| install.sh `pkill -f` pattern matched any command line ending in `/DockFix` | PIDs from LaunchServices by bundle ID (`lsappinfo`) |
+| "can't read" text blamed privacy settings for I/O errors too | message per errno (privacy, folder permissions, read error) in window and CLI |
+| TESTING.md single-instance step couldn't fail (kickstart never starts a second copy) | real second launches and a simultaneous-start test |
 
 ## Known limits
 

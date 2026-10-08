@@ -21,6 +21,7 @@ enum CLI {
                           bookmark finds or the best copy found by bundle ID
       --undo-repair       put the last repaired item back the way it was (other items untouched)
       --agent             the background check itself (launchd runs this)
+      --launch-menubar    start the menu bar app unless it is running, then exit (the Open at Login job runs this)
       --version, --help
     """
 
@@ -32,6 +33,8 @@ enum CLI {
         switch arguments[0] {
         case "--agent":
             return Agent.run()
+        case "--launch-menubar":
+            return LoginLauncher.run()
         case "--status":
             printStatus()
             return 0
@@ -89,17 +92,18 @@ enum CLI {
     }
 
     private static func setLoginItem(_ enabled: Bool) -> Int32 {
+        var failed = false
         do {
             try AgentService.setOpenAtLogin(enabled)
         } catch {
             print("Could not change Open at Login: \(error.localizedDescription)")
-            return 1
+            failed = true
         }
-        print("Open at login: \(AgentService.opensAtLogin ? "on" : "off")")
-        return 0
+        print("Open at login: \(AgentService.openAtLoginDescription)")
+        return failed || AgentService.opensAtLogin != enabled ? 1 : 0
     }
 
-        private static func repair(name: String, to explicitPath: String?) -> Int32 {
+    private static func repair(name: String, to explicitPath: String?) -> Int32 {
         let matches = DockPrefs.tiles(in: DockPrefs.editableSections)
             .filter { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }
         // With two items of the same name, act on the broken one.
@@ -111,7 +115,8 @@ enum CLI {
         if let explicitPath {
             target = (explicitPath as NSString).standardizingPath
         } else {
-            switch TileStatus.of(tile) {
+            let status = TileStatus.of(tile)
+            switch status {
             case .moved(let path):
                 target = path
             case .missing:
@@ -124,8 +129,8 @@ enum CLI {
                 print("“\(tile.name)” is on “\(drive)”, which isn't connected. It comes back when the drive does.")
                 print("To point it somewhere else anyway, give a PATH.")
                 return 1
-            case .noAccess(let place):
-                print("DockFix can't read “\(place)” (file permissions or macOS privacy settings), so it can't tell whether “\(tile.name)” is broken.")
+            case .noAccess:
+                print("DockFix can't tell whether “\(tile.name)” is broken. \(status.accessProblem ?? "")")
                 return 1
             case .ok, .notAFile:
                 print("“\(tile.name)” is not broken. To point it somewhere else anyway, give a PATH.")
@@ -158,7 +163,7 @@ enum CLI {
 
         print("DockFix \(version)")
         print("Background check: \(AgentService.state.description)")
-        print("Open at login: \(AgentService.opensAtLogin ? "on" : "off")")
+        print("Open at login: \(AgentService.openAtLoginDescription)")
         if let dock = evaluation.dock {
             print("Dock: pid \(dock.pid), started \(formatter.string(from: dock.started))")
         } else {
@@ -183,7 +188,7 @@ enum CLI {
             var line = "  \(status.code.padding(toLength: 9, withPad: " ", startingAt: 0)) \(tile.name)  \(tile.path ?? "")"
             if case .moved(let path) = status { line += "  → bookmark finds it at \(path)" }
             if case .driveNotConnected(let drive) = status { line += "  (drive “\(drive)” not connected)" }
-            if case .noAccess(let place) = status { line += "  (DockFix can't read “\(place)”)" }
+            if let problem = status.accessProblem { line += "  (\(problem))" }
             print(line)
             if status == .missing {
                 let candidates = AppFinder.candidates(for: tile)

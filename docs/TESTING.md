@@ -41,13 +41,21 @@ Detach the test image, remove the test tile and `killall Dock`, then attach the 
 | `killall Dock` then at once `$D --repair …` on the broken tile | waits for the Dock to settle (~16 s), then OK and still OK 8 s later |
 | export the Dock prefs, `$D --undo-repair`, export again | only the test item differs; MISSING again; a second undo prints "There is no earlier repair to undo." |
 | copy the app to `/Volumes/DockFixTest/Moved/`, add the tile there, move the copy into `/Volumes/DockFixTest/.Trashes/501/` | MISSING (not MOVED), offering the real copy |
-| tile inside a folder with `chmod 000` | NO ACCESS; `--repair` refuses |
+| tile inside a folder with `chmod 000` | NO ACCESS "Folder permissions on …"; `--repair` refuses |
 | tile on the test image, image detached | OFFLINE; `--repair` refuses |
 | `scripts/render_previews.sh repair` | renders the panel/window with a Repair button, then repairs through the model: "after repair: broken = 0" |
 
 ## 5b. Login launch and single instance
 
-Quit DockFix from its menu (`osascript -e 'tell application id "org.batesai.dockfix" to quit'`), then `launchctl kickstart gui/$(id -u)/org.batesai.dockfix.menubar`. Expect exactly one `DockFix --menubar` process, no DockFix windows on screen, and the menu bar icon. Kickstart again while it runs: still one process (the second copy exits).
+| Step | Expect |
+|---|---|
+| Quit DockFix (`osascript -e 'tell application id "org.batesai.dockfix" to quit'`), then `launchctl kickstart gui/$(id -u)/org.batesai.dockfix.menubar` | one `…/MacOS/DockFix --menubar` with parent pid 1 (started by LaunchServices, not the job); the job shows "not running", last exit 0; no DockFix windows; menu bar icon |
+| `$D --login-item off` | the app keeps running (same pid) |
+| `$D --login-item on` | still the same single copy, no window |
+| `$D --menubar &`, `open -g -n -a /Applications/DockFix.app --args --menubar`, `$D --launch-menubar` | each extra copy exits; one copy left |
+| Quit DockFix, then start two copies at once (`$D --menubar & $D --menubar &`), check, quit; repeat 10 times | exactly one copy every time |
+
+Not covered here because it takes focus: a bare second launch (`open -n -a /Applications/DockFix.app`) should exit and make the running copy show its window.
 
 ## 6. UI
 

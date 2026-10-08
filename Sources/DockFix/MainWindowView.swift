@@ -159,7 +159,7 @@ struct RowView: View {
         case .missing where !searching:
             return searchIncomplete ? "Not found in the folders searched (some drives are too big to search fully)"
                                     : "No other copy found on this Mac or connected drives"
-        case .noAccess: return "Allow DockFix in System Settings › Privacy & Security to check this drive"
+        case .noAccess: return row.status.accessProblem
         default: return nil
         }
     }

@@ -1,6 +1,6 @@
 #!/bin/bash
-# Installs the built DockFix.app into /Applications, archiving the copy it replaces, and restarts
-# the menu bar app if it was running.
+# Installs the built DockFix.app into /Applications, archiving the copy it replaces, re-registers the
+# launchd jobs that are switched on, and restarts the menu bar app if it was running.
 #   scripts/install.sh            install / update
 #   scripts/install.sh --enable   also turn on the background check and Open at Login, and start
 #                                 the menu bar app
@@ -14,10 +14,16 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="${DOCKFIX_BUILD_DIR:-$HOME/Downloads/dockfix-build}"
 APP="$BUILD/DockFix.app"
 DEST="/Applications/DockFix.app"
-# The menu bar app, however it was started (Finder, open, or the login job, whose argv[0] is just
-# "DockFix"). The background check (--agent) and CLI runs are not matched.
-GUI_PATTERN='(^|/)DockFix( --menubar)?$'
-gui_running() { pgrep -f "$GUI_PATTERN" >/dev/null; }
+# PIDs of the running menu bar app, found by bundle ID through LaunchServices, however it was started
+# (also a copy run from the build folder). The background check and command-line runs are not apps
+# and never match.
+gui_pids() {
+  local asn
+  for asn in $(lsappinfo find bundleid=org.batesai.dockfix 2>/dev/null); do
+    lsappinfo info "$asn" 2>/dev/null | sed -nE 's/^ *pid = ([0-9]+) .*type="(UIElement|Foreground)".*/\1/p'
+  done
+}
+gui_running() { [ -n "$(gui_pids)" ]; }
 
 [ -d "$APP" ] || { echo "Build first: scripts/build.sh"; exit 1; }
 
@@ -26,7 +32,8 @@ if gui_running; then
   was_running=1
   osascript -e 'tell application id "org.batesai.dockfix" to quit' >/dev/null 2>&1 || true
   for _ in $(seq 1 20); do gui_running || break; sleep 0.25; done
-  gui_running && pkill -TERM -f "$GUI_PATTERN" || true   # our own app only
+  pids=$(gui_pids)
+  [ -n "$pids" ] && kill -TERM $pids 2>/dev/null || true   # our own app only
   for _ in $(seq 1 20); do gui_running || break; sleep 0.25; done
   if gui_running; then
     echo "DockFix is still running; quit it from its menu bar icon and run this again."
@@ -45,15 +52,30 @@ rsync -a --delete "$APP/" "$DEST/"
 codesign --verify --strict "$DEST"
 echo "Installed $("$DEST/Contents/MacOS/DockFix" --version) → $DEST"
 
+DOCKFIX="$DEST/Contents/MacOS/DockFix"
+job_loaded() { launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1; }
+agent_on=0; login_on=0
+job_loaded org.batesai.dockfix.agent && agent_on=1
+job_loaded org.batesai.dockfix.menubar && login_on=1
 if [ "${1:-}" = "--enable" ]; then
-  # Keep going if either fails (e.g. switched off in Login Items): the app is relaunched below either way.
-  "$DEST/Contents/MacOS/DockFix" --enable || echo "Warning: background check not turned on (see System Settings › General › Login Items)."
-  "$DEST/Contents/MacOS/DockFix" --login-item on || echo "Warning: Open at Login not turned on."
-  was_running=1
+  agent_on=1; login_on=1; was_running=1
 fi
 
-if [ "$was_running" = 1 ]; then
-  # -g: start in the background without taking focus. One instance only.
+# launchd keeps a registered job's old definition until the job is registered again, so register
+# the switched-on jobs afresh to load the updated bundle's plists. The menu bar app is quit at this
+# point, so unregistering can't kill it. Keep going if either fails (e.g. switched off in Login Items).
+if [ "$agent_on" = 1 ]; then
+  "$DOCKFIX" --disable >/dev/null 2>&1 || true
+  "$DOCKFIX" --enable || echo "Warning: background check not turned on (see System Settings › General › Login Items)."
+fi
+if [ "$login_on" = 1 ]; then
+  "$DOCKFIX" --login-item off >/dev/null 2>&1 || true
+  "$DOCKFIX" --login-item on || echo "Warning: Open at Login not turned on."   # also starts the menu bar app
+fi
+
+if [ "$was_running" = 1 ] || [ "$login_on" = 1 ]; then
+  for _ in $(seq 1 20); do gui_running && break; sleep 0.25; done
+  # -g: start in the background without taking focus. A second copy would exit at once anyway.
   gui_running || open -g -a "$DEST" --args --menubar
   echo "Menu bar app running."
 fi
