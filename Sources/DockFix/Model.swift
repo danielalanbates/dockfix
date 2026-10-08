@@ -6,6 +6,9 @@ import ServiceManagement
 
 /// State shared by the menu bar panel and the window. Refreshes when the panel or window opens and
 /// when a drive mounts or unmounts or the Mac wakes. No timers.
+///
+/// Anything that touches drives (status of each item, mount times, the search for moved apps) runs off
+/// the main thread: a slow or unreachable drive must not freeze the menu bar.
 @MainActor
 final class Model: ObservableObject {
     static let shared = Model()
@@ -22,8 +25,9 @@ final class Model: ObservableObject {
     @Published var agentState: AgentService.State = .off
     @Published var openAtLogin = false
     @Published var history: [History.Entry] = []
-    @Published var canUndo = false
+    @Published var undoable: Backup.Saved?
     @Published var searching = false
+    @Published var searchIncomplete = false
     @Published var working = false
     @Published var note: String?
 
@@ -47,53 +51,63 @@ final class Model: ObservableObject {
 
     var problemCount: Int { rows.filter { $0.status.needsRepair }.count }
     var brokenRows: [Row] { rows.filter { $0.status.needsRepair } }
-    /// Broken items first, then items on disconnected drives, then the rest, each in Dock order.
+    /// Drives that connected after the Dock started and no check has handled yet — their items show "?"
+    /// until the Dock restarts.
+    var staleDrives: [Agent.VolumeCheck] { drives.filter(\.needsRestart) }
+    var offlineDrives: [Agent.VolumeCheck] { drives.filter { !$0.mounted } }
+
+    /// Broken items first, then items on disconnected or unreadable drives, then the rest, each in Dock order.
     var rowsProblemsFirst: [Row] {
         func rank(_ row: Row) -> Int {
             if row.status.needsRepair { return 0 }
-            if case .driveNotConnected = row.status { return 1 }
-            return 2
+            switch row.status {
+            case .driveNotConnected, .noAccess: return 1
+            default: return 2
+            }
         }
         return rows.enumerated()
             .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
             .map(\.element)
     }
-    /// Drives that connected after the Dock started — their items show "?" until the Dock restarts.
-    var staleDrives: [Agent.VolumeCheck] { drives.filter(\.mountedAfterDock) }
 
     func refresh() {
         agentState = AgentService.state
         openAtLogin = SMAppService.mainApp.status == .enabled
         history = History.load()
-        canUndo = Backup.exists
-        drives = Agent.evaluate().volumes
-        // Keep earlier search results on screen while the new search runs, so Repair buttons don't flicker.
-        let previous = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        rows = DockPrefs.tiles(in: DockPrefs.editableSections)
-            .map { tile in
-                var row = Row(tile: tile, status: TileStatus.of(tile))
-                if let old = previous[tile.id], old.tile.path == tile.path { row.candidates = old.candidates }
-                return row
-            }
-            .filter { $0.status != .notAFile }
+        undoable = Backup.saved
 
         generation += 1
         let current = generation
-        let missing = rows.filter { $0.status == .missing }.map(\.tile)
-        guard !missing.isEmpty else {
-            searching = false
-            return
-        }
-        searching = true
+        // Keep earlier search results on screen while the new check runs, so Repair buttons don't flicker.
+        let previous = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+
         Task.detached(priority: .userInitiated) {
-            var search: [String: [String]] = [:]
-            for tile in missing { search[tile.id] = AppFinder.candidates(for: tile) }
-            let found = search
-            await MainActor.run {
-                guard current == self.generation else { return }  // a newer refresh is under way
-                for index in self.rows.indices {
-                    if let candidates = found[self.rows[index].id] { self.rows[index].candidates = candidates }
+            let drives = Agent.evaluate().volumes
+            let fresh = DockPrefs.tiles(in: DockPrefs.editableSections)
+                .map { tile in
+                    var row = Row(tile: tile, status: TileStatus.of(tile))
+                    if let old = previous[tile.id], old.tile.path == tile.path { row.candidates = old.candidates }
+                    return row
                 }
+                .filter { $0.status != .notAFile }
+            let missing = fresh.filter { $0.status == .missing }.map(\.tile)
+
+            let stillCurrent = await MainActor.run { () -> Bool in
+                guard current == self.generation else { return false }  // a newer refresh is under way
+                self.drives = drives
+                self.rows = fresh
+                self.searching = !missing.isEmpty
+                return true
+            }
+            guard stillCurrent, !missing.isEmpty else { return }
+
+            let search = AppFinder.candidates(for: missing)
+            await MainActor.run {
+                guard current == self.generation else { return }
+                for index in self.rows.indices {
+                    if let candidates = search.candidates[self.rows[index].id] { self.rows[index].candidates = candidates }
+                }
+                self.searchIncomplete = search.incomplete
                 self.searching = false
             }
         }
@@ -125,24 +139,56 @@ final class Model: ObservableObject {
     }
 
     func repair(_ row: Row, to path: String) {
-        do {
-            try DockPrefs.repoint(row.tile, to: path)
-        } catch {
-            note = "Repair failed: \(error.localizedDescription)"
+        guard !working else { return }
+        guard FileCheck.check(path) == .exists else {
+            note = "Can't repair “\(row.tile.name)”: nothing at \(path) any more."
+            refresh()
             return
         }
-        History.add("Repointed “\(row.tile.name)” to \(path)")
-        restartDock(clearingIconCache: true, message: "Pointed “\(row.tile.name)” at \(path).")
+        let tile = row.tile
+        working = true
+        note = "Repairing “\(tile.name)”…"
+        Task.detached(priority: .userInitiated) {
+            let outcome: String
+            do {
+                if try DockEditor.repair(tile, to: path) {
+                    History.add("Repointed “\(tile.name)” to \(path)")
+                    outcome = "Pointed “\(tile.name)” at \(path)."
+                } else {
+                    History.add("Tried to repoint “\(tile.name)” to \(path), but the Dock kept its old setting")
+                    outcome = "The Dock kept its old setting for “\(tile.name)”. Try Repair again."
+                }
+            } catch {
+                outcome = "Repair failed: \(error.localizedDescription)"
+            }
+            await MainActor.run {
+                self.working = false
+                self.note = outcome
+                self.refresh()
+            }
+        }
     }
 
     func undo() {
-        do {
-            try Backup.restore()
-        } catch {
-            note = error.localizedDescription
-            return
+        guard !working else { return }
+        working = true
+        note = "Undoing the last repair…"
+        Task.detached(priority: .userInitiated) {
+            let outcome: String
+            do {
+                let result = try DockEditor.undo()
+                History.add("Undid the repair of “\(result.name)”")
+                outcome = result.ok ? "Put “\(result.name)” back the way it was before the repair."
+                                    : "Undid the repair of “\(result.name)”, but the Dock kept the repaired setting."
+            } catch {
+                outcome = error.localizedDescription
+            }
+            await MainActor.run {
+                self.working = false
+                self.note = outcome
+                self.refresh()
+            }
         }
-        restartDock(clearingIconCache: false, message: "Put the Dock back the way it was before the last repair.")
     }
 
     func restartDock(clearingIconCache: Bool, message: String? = nil) {

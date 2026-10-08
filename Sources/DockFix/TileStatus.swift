@@ -1,13 +1,17 @@
 // Copyright (c) 2026 Daniel Bates / Bates LLC. All rights reserved. See LICENSE.
 
 import AppKit
+import Darwin
 import Foundation
 
 enum TileStatus: Equatable {
     case ok
     /// The item lives on a drive that is not connected. Nothing to repair; it comes back with the drive.
     case driveNotConnected(String)
-    /// The saved path is gone but the Dock's bookmark still finds the item at this new path.
+    /// macOS privacy settings stop DockFix from reading the item's drive or folder. The Dock itself may be
+    /// fine, and DockFix must not "repair" it to some other copy.
+    case noAccess(String)
+    /// The saved path is gone but the Dock's bookmark still finds this exact item at a new path.
     case moved(String)
     /// Gone from where the Dock expects it.
     case missing
@@ -26,6 +30,7 @@ enum TileStatus: Equatable {
         switch self {
         case .ok: return "OK"
         case .driveNotConnected: return "OFFLINE"
+        case .noAccess: return "NO ACCESS"
         case .moved: return "MOVED"
         case .missing: return "MISSING"
         case .notAFile: return ""
@@ -36,6 +41,7 @@ enum TileStatus: Equatable {
         switch self {
         case .ok: return "OK"
         case .driveNotConnected(let drive): return "Drive “\(drive)” not connected"
+        case .noAccess(let place): return "DockFix can't read “\(place)”"
         case .moved: return "Moved"
         case .missing: return "Missing"
         case .notAFile: return ""
@@ -44,24 +50,56 @@ enum TileStatus: Equatable {
 
     static func of(_ tile: DockTile) -> TileStatus {
         guard let path = tile.path else { return .notAFile }
-        if FileManager.default.fileExists(atPath: path) { return .ok }
+        switch FileCheck.check(path) {
+        case .exists:
+            return .ok
+        case .denied:
+            return .noAccess(Volumes.volumeRoot(of: path).map { ($0 as NSString).lastPathComponent }
+                             ?? ((path as NSString).deletingLastPathComponent as NSString).lastPathComponent)
+        case .absent:
+            break
+        }
+        // The bookmark names this exact file (volume UUID + file ID), so following it can't land on a
+        // different copy. It also finds items on a drive that now mounts under another name ("x10 1").
+        if let resolved = resolve(tile.bookmark), resolved != path, !AppFinder.isInTrash(resolved),
+           FileCheck.check(resolved) == .exists {
+            return .moved(resolved)
+        }
         if let volume = Volumes.volumeRoot(of: path), !Volumes.isMounted(volume) {
             return .driveNotConnected((volume as NSString).lastPathComponent)
         }
-        if let bookmark = tile.bookmark {
-            var stale = false
-            if let url = try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI, .withoutMounting],
-                                  relativeTo: nil, bookmarkDataIsStale: &stale),
-               url.path != path, FileManager.default.fileExists(atPath: url.path) {
-                return .moved(url.path)
-            }
-        }
         return .missing
+    }
+
+    private static func resolve(_ bookmark: Data?) -> String? {
+        guard let bookmark else { return nil }
+        var stale = false
+        let url = try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI, .withoutMounting],
+                           relativeTo: nil, bookmarkDataIsStale: &stale)
+        return url?.path
     }
 }
 
-/// Copies of an app that a broken Dock item could point at instead.
+/// Tells "not there" apart from "not allowed to look" — FileManager.fileExists reports both as false.
+enum FileCheck {
+    case exists, absent, denied
+
+    static func check(_ path: String) -> FileCheck {
+        var info = stat()
+        if stat(path, &info) == 0 { return .exists }
+        return errno == EACCES || errno == EPERM ? .denied : .absent
+    }
+}
+
+/// Copies of apps that broken Dock items could point at instead.
 enum AppFinder {
+    struct Result {
+        /// Tile id → candidate paths, best first.
+        var candidates: [String: [String]] = [:]
+        /// True when a folder was too big to search completely, so "not found" is not certain.
+        var incomplete = false
+    }
+
     /// Folders that hold system or backup copies, never something to point the Dock at.
     private static let skippedNames: Set<String> = [
         "Backups.backupdb", "System", "Library", "Users", "private", "usr", "bin", "sbin", "cores", "dev", "opt",
@@ -70,59 +108,89 @@ enum AppFinder {
     private static let skippedVolumes: Set<String> = [
         "Recovery", "com.apple.TimeMachine.localsnapshots", ".timemachine", ".PEVolumes",
     ]
-    private static let visitLimit = 40_000
+    /// Entries examined per search root, so one huge drive can't use up the search for the others.
+    private static let visitsPerRoot = 20_000
+
+    static func isInTrash(_ path: String) -> Bool {
+        path.contains("/.Trash/") || path.contains("/.Trashes/") || path.hasSuffix("/.Trash") || path.hasSuffix("/.Trashes")
+    }
 
     static func candidates(for tile: DockTile) -> [String] {
-        guard let brokenPath = tile.path else { return [] }
-        let wantedName = (brokenPath as NSString).lastPathComponent
-        var seen = Set<String>()
-        var found: [String] = []
+        candidates(for: [tile]).candidates[tile.id] ?? []
+    }
 
-        func consider(_ path: String) {
-            guard path != brokenPath, seen.insert(path).inserted, !isExcluded(path) else { return }
-            if let bundleID = tile.bundleID {
-                guard Self.bundleID(at: path) == bundleID else { return }
+    /// One pass over the disks for all broken tiles at once.
+    static func candidates(for tiles: [DockTile]) -> Result {
+        struct Wanted { let id: String; let bundleID: String?; let name: String; let brokenPath: String }
+        let wanted = tiles.compactMap { tile -> Wanted? in
+            guard let path = tile.path else { return nil }
+            return Wanted(id: tile.id, bundleID: tile.bundleID, name: (path as NSString).lastPathComponent, brokenPath: path)
+        }
+        var result = Result()
+        guard !wanted.isEmpty else { return result }
+
+        var found: [String: Set<String>] = [:]
+        var bundleIDs: [String: String?] = [:]
+        func consider(_ appPath: String) {
+            guard !isInTrash(appPath), !appPath.contains("/Backups.backupdb/"), FileCheck.check(appPath) == .exists else { return }
+            let bundleID: String?
+            if let cached = bundleIDs[appPath] {
+                bundleID = cached
             } else {
-                guard (path as NSString).lastPathComponent == wantedName else { return }
+                bundleID = NSDictionary(contentsOfFile: appPath + "/Contents/Info.plist")?["CFBundleIdentifier"] as? String
+                bundleIDs[appPath] = bundleID
             }
-            found.append(path)
-        }
-
-        if let bundleID = tile.bundleID {
-            for url in NSWorkspace.shared.urlsForApplications(withBundleIdentifier: bundleID) {
-                consider(url.path)
+            for item in wanted where appPath != item.brokenPath {
+                let matches = item.bundleID.map { $0 == bundleID } ?? ((appPath as NSString).lastPathComponent == item.name)
+                if matches { found[item.id, default: []].insert(appPath) }
             }
         }
 
-        var visits = 0
+        for bundleID in Set(wanted.compactMap(\.bundleID)) {
+            for url in NSWorkspace.shared.urlsForApplications(withBundleIdentifier: bundleID) { consider(url.path) }
+        }
+        for (root, depth) in searchRoots(preferring: wanted.compactMap { Volumes.volumeRoot(of: $0.brokenPath) }) {
+            var visits = 0
+            scan(root, depth: depth, visits: &visits, onApp: consider)
+            if visits >= visitsPerRoot { result.incomplete = true }
+        }
+
+        for item in wanted {
+            result.candidates[item.id] = (found[item.id] ?? []).sorted { lhs, rhs in
+                let l = rank(lhs, name: item.name), r = rank(rhs, name: item.name)
+                return l != r ? l < r : (lhs.count != rhs.count ? lhs.count < rhs.count : lhs < rhs)
+            }
+        }
+        return result
+    }
+
+    /// App folders first, then the drives that broken items lived on, then every other connected drive.
+    private static func searchRoots(preferring volumes: [String]) -> [(String, Int)] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var roots: [(String, Int)] = [("/Applications", 2), (home + "/Applications", 2), ("/System/Applications", 2)]
-        let volumes = (try? FileManager.default.contentsOfDirectory(atPath: Volumes.root)) ?? []
-        for name in volumes.sorted() where !skippedVolumes.contains(name) && !name.hasPrefix(".") {
-            let path = Volumes.root + "/" + name
-            if Volumes.isMounted(path) { roots.append((path, 3)) }
-        }
-        for (root, depth) in roots {
-            scan(root, depth: depth, visits: &visits) { consider($0) }
-        }
-
-        return found.sorted { lhs, rhs in
-            let lhsKey = rank(lhs, wantedName: wantedName), rhsKey = rank(rhs, wantedName: wantedName)
-            return lhsKey != rhsKey ? lhsKey < rhsKey : lhs.count < rhs.count
-        }
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: Volumes.root)) ?? []
+        let mounted = names.sorted()
+            .filter { !skippedVolumes.contains($0) && !$0.hasPrefix(".") }
+            .map { Volumes.root + "/" + $0 }
+            .filter { Volumes.isMounted($0) }
+        let preferred = Set(volumes)
+        roots += mounted.filter { preferred.contains($0) }.map { ($0, 3) }
+        roots += mounted.filter { !preferred.contains($0) }.map { ($0, 3) }
+        return roots
     }
 
     private static func scan(_ directory: String, depth: Int, visits: inout Int, onApp: (String) -> Void) {
-        guard depth > 0, visits < visitLimit,
+        guard depth > 0, visits < visitsPerRoot,
               let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else { return }
         for name in names where !name.hasPrefix(".") && !skippedNames.contains(name) {
             visits += 1
-            if visits >= visitLimit { return }
+            if visits >= visitsPerRoot { return }
             let path = directory + "/" + name
             if name.hasSuffix(".app") {
                 onApp(path)
                 continue
             }
+            guard depth > 1 else { continue }
             let url = URL(fileURLWithPath: path)
             guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey]),
                   values.isDirectory == true, values.isSymbolicLink != true, values.isPackage != true else { continue }
@@ -130,19 +198,10 @@ enum AppFinder {
         }
     }
 
-    private static func bundleID(at path: String) -> String? {
-        let info = NSDictionary(contentsOfFile: path + "/Contents/Info.plist")
-        return info?["CFBundleIdentifier"] as? String
-    }
-
-    private static func isExcluded(_ path: String) -> Bool {
-        path.contains("/.Trash") || path.contains("/Backups.backupdb/") || !FileManager.default.fileExists(atPath: path)
-    }
-
     /// Lower is better: same file name first, then anything in an Applications folder.
-    private static func rank(_ path: String, wantedName: String) -> Int {
+    private static func rank(_ path: String, name: String) -> Int {
         var score = 0
-        if (path as NSString).lastPathComponent != wantedName { score += 2 }
+        if (path as NSString).lastPathComponent != name { score += 2 }
         if !path.contains("/Applications/") { score += 1 }
         return score
     }

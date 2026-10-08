@@ -17,7 +17,8 @@ The author's Dock kept showing "?" for apps. Diagnosis (macOS 27.0.1, MacBook, a
 | `Sources/DockFix/Agent.swift` | The background check (decision + restart) |
 | `Sources/DockFix/Volumes.swift` | Mount detection and mount times (`getattrlistbulk` on /Volumes) |
 | `Sources/DockFix/DockProcess.swift` | Find this user's Dock, its start time, restart it |
-| `Sources/DockFix/DockPrefs.swift` | Read/repoint Dock items, repair backup/undo, icon cache |
+| `Sources/DockFix/DockPrefs.swift` | Read/repoint Dock items, per-item repair backup, icon cache |
+| `Sources/DockFix/DockEditor.swift` | Repair/undo that wait for a settled Dock, verify, and retry once |
 | `Sources/DockFix/TileStatus.swift` | Per-item status + `AppFinder` (finds moved copies) |
 | `Sources/DockFix/AgentService.swift` | SMAppService wrapper + activity history |
 | `Sources/DockFix/App.swift`, `Model.swift`, `MenuPanel.swift`, `MainWindowView.swift` | Menu bar app and window |
@@ -34,10 +35,12 @@ Build output never goes in the repo: `~/Downloads/dockfix-build/` (app, archive 
 - **Short-lived launchd job, not a resident daemon.** The goal is an idle machine. `StartOnMount` gives the exact trigger with zero polling. The menu bar app is separate and optional; the fix works with it quit.
 - **SMAppService-bundled job** instead of a plist in `~/Library/LaunchAgents`: nothing written outside the app, shows in Login Items, removed with the app.
 - **Mount time from the mount-point folder's creation time.** DiskArbitration's `DAAppearanceTime` was tried first: it reported 18:54:35 for *every* disk, including the internal one (when diskarbitrationd started), so it is useless. The folder's crtime via `getattrlistbulk` matched the real mount.
-- **Stateless decision** (compare two timestamps) instead of remembering what was mounted before: survives reboots, Dock restarts by other tools, and multiple drives without bookkeeping, and cannot loop.
+- **Timestamps plus a "seen mounts" list.** The core test compares two timestamps (survives reboots and Dock restarts by other tools). Review found that timestamps alone misfire when a drive mounts with no Dock items and gets one later (the Dock shows that fine): the next unrelated mount would restart the Dock. So each run records the mounts it evaluated (`SeenMounts`, path → mount time) and a mount is acted on at most once. Only mounts present at evaluation time are recorded, so a drive that mounts mid-check is still evaluated by the next run.
 - **Race window 3 s, settle delay 5 s.** Must satisfy settle > window so a restart can't re-trigger itself. Side effect seen in testing: if something else restarts the Dock within 3 s after a mount, the agent restarts it once more. Harmless.
 - **Repair is manual.** The agent never edits Dock preferences. An offline drive must not be "repaired" to a different copy (x10 had duplicate copies of XIV on Mac and FFXI-on-Mac), so `TileStatus` reports `driveNotConnected` for paths on unmounted `/Volumes/<name>` and offers no repair.
-- **Undo** keeps one backup (the whole Dock section before the last repair) in DockFix's own preferences. Restoring it drops anything added to that section afterwards; the UI says so.
+- **Undo** keeps one backup: the repaired item's original dictionary (found again by GUID). Undo replaces only that item, so later Dock changes survive. The first version restored the whole section; review caught that it would wipe later changes.
+- **The Dock rewrites its item list ~5 s after it starts** (measured: it adds file-mod-date, parent-mod-date, dock-extra, is-beta). An edit made in that window is silently lost; the first test run hit it. `DockEditor` waits until the Dock is 8 s old before writing, restarts it, waits again, checks the item points where intended, and writes once more if not.
+- **Status distinguishes "absent" from "not allowed"** (`FileCheck`, errno EACCES/EPERM → `noAccess`), so a drive DockFix can't read is never treated as missing and "repaired" to another copy. Bookmarks resolving into a Trash don't count as "moved".
 
 ## Verified (2026-10-08, macOS 27.0.1)
 
@@ -53,8 +56,17 @@ Build output never goes in the repo: `~/Downloads/dockfix-build/` (app, archive 
 | Window/panel Repair action through `Model.repair` (tests/RenderPreviews `repair`) | pass |
 | Panel and window rendered offscreen in light and dark | pass |
 | Real Dock order/labels identical before and after the test run | pass |
+| Review fixes (second round): seen mount + item added later + unrelated mount → no restart | pass |
+| Repair started 0.5 s after a Dock restart (inside the rewrite window) → waited, stuck | pass |
+| Undo changes only the repaired item (full persistent-apps diff) | pass |
+| `--repair` refuses OK items, items on a disconnected drive, and unreadable (chmod 000) folders | pass |
+| Bookmark resolving into `.Trashes` → MISSING with the real copy offered, not "moved to Trash" | pass |
 
-Not verified by machine: real mouse clicks in the panel/window (the same model calls were exercised), and that a launch **at login** suppresses the window (`keyAELaunchedAsLogInItem`; needs a real login). If the window does open at every login, start the login item with `--menubar` instead: switch Open at Login from `SMAppService.mainApp` to a second bundled LaunchAgent whose `ProgramArguments` include `--menubar`.
+Not verified by machine: real mouse clicks in the panel/window (the same model calls were exercised), and that a launch **at login** keeps the window closed. Two checks guard it: the `keyAELaunchedAsLogInItem` flag on the open event (read in `applicationDidFinishLaunching`, where it is available) and, as a fallback, DockFix starting within 2 minutes of this user's `loginwindow`. If the window still opens at every login, start the login item with `--menubar` instead: switch Open at Login from `SMAppService.mainApp` to a second bundled LaunchAgent whose `ProgramArguments` include `--menubar`.
+
+## Review (2026-10-08)
+
+Three Claude reviewers (agent safety; Dock prefs and repair; app, UI and scripts) reported 17 findings; the verifier agent failed on a network error, so each finding was checked by hand against the code. All 17 held up (14 distinct); all were fixed and retested, see the table above. The free-model reviews (Gemini Pro: HTTP 429 on the free tier; OpenRouter free models: 403/timeouts/DNS errors) did not complete.
 
 ## Known limits
 

@@ -55,10 +55,13 @@ MainActor.assumeIsolated {
        let row = model.brokenRows.first, let target = row.candidates.first {
         print("repairing", row.tile.name, "→", target)
         model.repair(row, to: target)
-        let deadline = Date().addingTimeInterval(25)
+        let deadline = Date().addingTimeInterval(60)
         repeat {
             RunLoop.main.run(until: Date().addingTimeInterval(0.25))
         } while (model.working || model.searching) && Date() < deadline
+        // The refresh after a repair runs in the background; give it a moment, then wait for it.
+        RunLoop.main.run(until: Date().addingTimeInterval(2))
+        waitForSearch()
         print("after repair: broken =", model.problemCount, "note =", model.note ?? "-")
     }
 }

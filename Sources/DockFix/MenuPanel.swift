@@ -18,7 +18,10 @@ struct MenuPanel: View {
             summary
 
             ForEach(model.brokenRows) { row in
-                BrokenItemRow(row: row, searching: model.searching) { model.repair(row, to: $0) }
+                BrokenItemRow(row: row, searching: model.searching, searchIncomplete: model.searchIncomplete) {
+                    model.repair(row, to: $0)
+                }
+                .disabled(model.working)
             }
 
             if !model.drives.isEmpty {
@@ -26,7 +29,7 @@ struct MenuPanel: View {
                     ForEach(model.drives, id: \.path) { drive in
                         Label(driveText(drive), systemImage: drive.mounted ? "externaldrive.fill" : "externaldrive")
                             .font(.caption)
-                            .foregroundStyle(drive.mountedAfterDock ? Color.orange : Color.secondary)
+                            .foregroundStyle(drive.needsRestart ? Color.orange : Color.secondary)
                     }
                 }
             }
@@ -75,6 +78,11 @@ struct MenuPanel: View {
             Label("Restart the Dock to show apps on \(model.staleDrives.map(\.name).joined(separator: ", "))",
                   systemImage: "arrow.clockwise.circle.fill")
                 .foregroundStyle(.orange)
+        } else if !model.offlineDrives.isEmpty {
+            let names = model.offlineDrives.map { "“\($0.name)”" }.joined(separator: ", ")
+            Label("Apps on \(names) come back when \(model.offlineDrives.count == 1 ? "it's" : "they're") connected",
+                  systemImage: "externaldrive.badge.xmark")
+                .foregroundStyle(.secondary)
         } else {
             Label("All Dock icons OK", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
         }
@@ -83,7 +91,7 @@ struct MenuPanel: View {
     private func driveText(_ drive: Agent.VolumeCheck) -> String {
         let items = "\(drive.itemCount) Dock item\(drive.itemCount == 1 ? "" : "s")"
         if !drive.mounted { return "\(drive.name): not connected · \(items)" }
-        if drive.mountedAfterDock { return "\(drive.name): connected after the Dock started · \(items)" }
+        if drive.needsRestart { return "\(drive.name): connected after the Dock started · \(items)" }
         return "\(drive.name): connected · \(items)"
     }
 }
@@ -91,6 +99,7 @@ struct MenuPanel: View {
 private struct BrokenItemRow: View {
     let row: Model.Row
     let searching: Bool
+    let searchIncomplete: Bool
     let repair: (String) -> Void
 
     var body: some View {
@@ -121,7 +130,8 @@ private struct BrokenItemRow: View {
         switch row.status {
         case .moved(let path): return "Moved to \(path)"
         case .missing where !row.candidates.isEmpty: return "Found at \(row.candidates[0])"
-        case .missing: return searching ? "Looking for it…" : "Not found on this Mac or connected drives"
+        case .missing where searching: return "Looking for it…"
+        case .missing: return searchIncomplete ? "Not found in the folders searched" : "Not found on this Mac or connected drives"
         default: return ""
         }
     }

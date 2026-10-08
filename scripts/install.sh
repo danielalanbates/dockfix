@@ -41,8 +41,9 @@ codesign --verify --strict "$DEST"
 echo "Installed $("$DEST/Contents/MacOS/DockFix" --version) → $DEST"
 
 if [ "${1:-}" = "--enable" ]; then
-  "$DEST/Contents/MacOS/DockFix" --enable
-  "$DEST/Contents/MacOS/DockFix" --login-item on
+  # Keep going if either fails (e.g. switched off in Login Items): the app is relaunched below either way.
+  "$DEST/Contents/MacOS/DockFix" --enable || echo "Warning: background check not turned on (see System Settings › General › Login Items)."
+  "$DEST/Contents/MacOS/DockFix" --login-item on || echo "Warning: Open at Login not turned on."
   was_running=1
 fi
 

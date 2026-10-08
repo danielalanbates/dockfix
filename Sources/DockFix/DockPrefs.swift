@@ -66,14 +66,14 @@ enum DockPrefs {
     /// Points a Dock item at `newPath`: new URL, fresh bookmark, and cleared modification dates.
     /// The dates matter — with stale ones left in, the Dock kept showing "?" even after the URL and
     /// bookmark were correct (seen 2026-10-08 with Zygor and XIV on Mac moved to an external drive).
-    static func repoint(_ tile: DockTile, to newPath: String) throws {
+    static func repoint(_ tile: DockTile, to newPath: String, saveBackup: Bool = true) throws {
         sync()
         var list = items(in: tile.section)
         guard let index = locate(tile, in: list) else { throw DockPrefsError.tileNotFound(tile.name) }
-        try Backup.save(section: tile.section, items: list)
+        let original = list[index]
 
         let url = URL(fileURLWithPath: newPath, isDirectory: true)
-        var item = list[index]
+        var item = original
         var data = item["tile-data"] as? [String: Any] ?? [:]
         data["book"] = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
         var fileData = data["file-data"] as? [String: Any] ?? [:]
@@ -84,7 +84,29 @@ enum DockPrefs {
         data["parent-mod-date"] = 0
         item["tile-data"] = data
         list[index] = item
+
+        // Only a repair that was actually written replaces the undo backup.
         try write(list, to: tile.section)
+        if saveBackup { try Backup.save(tile: tile, original: original) }
+    }
+
+    /// Where the Dock's preferences currently point `tile` (found again by GUID), or nil if it's gone.
+    static func currentPath(of tile: DockTile) -> String? {
+        sync()
+        let list = items(in: tile.section)
+        guard let index = locate(tile, in: list) else { return nil }
+        return filePath(of: list[index]["tile-data"] as? [String: Any] ?? [:])
+    }
+
+    /// Puts one item back as it was before the last repair, leaving the rest of the Dock alone.
+    static func restore(_ backup: Backup.Saved) throws {
+        sync()
+        var list = items(in: backup.section)
+        let probe = DockTile(section: backup.section, index: backup.index, guid: backup.guid, label: backup.label,
+                             bundleID: nil, path: nil, bookmark: nil)
+        guard let index = locate(probe, in: list) else { throw DockPrefsError.tileNotFound(backup.label) }
+        list[index] = backup.item
+        try write(list, to: backup.section)
     }
 
     static func write(_ list: [[String: Any]], to section: String) throws {
@@ -93,7 +115,7 @@ enum DockPrefs {
     }
 
     /// Finds the same item again after the list may have changed: by GUID, else by position and label.
-    private static func locate(_ tile: DockTile, in list: [[String: Any]]) -> Int? {
+    static func locate(_ tile: DockTile, in list: [[String: Any]]) -> Int? {
         if let guid = tile.guid,
            let index = list.firstIndex(where: { ($0["GUID"] as? NSNumber)?.intValue == guid }) {
             return index
@@ -103,7 +125,7 @@ enum DockPrefs {
         return (data["file-label"] as? String ?? "") == tile.label ? tile.index : nil
     }
 
-    private static func filePath(of tileData: [String: Any]) -> String? {
+    static func filePath(of tileData: [String: Any]) -> String? {
         guard let fileData = tileData["file-data"] as? [String: Any],
               let string = fileData["_CFURLString"] as? String, !string.isEmpty else { return nil }
         if (fileData["_CFURLStringType"] as? NSNumber)?.intValue == 0 {
@@ -114,32 +136,54 @@ enum DockPrefs {
     }
 }
 
-/// The Dock section as it was before the most recent repair, kept in DockFix's own preferences.
+/// The repaired Dock item as it was before the most recent repair, kept in DockFix's own preferences.
+/// Undo puts back that one item only, so later changes to the rest of the Dock are kept.
 enum Backup {
-    private static let key = "lastRepairBackup"
-
-    static var exists: Bool {
-        UserDefaults.standard.dictionary(forKey: key) != nil
+    struct Saved {
+        let date: Date
+        let section: String
+        let index: Int
+        let guid: Int?
+        let label: String
+        let item: [String: Any]
     }
 
-    static var date: Date? {
-        UserDefaults.standard.dictionary(forKey: key)?["date"] as? Date
+    private static let key = "lastRepair"
+
+    static var saved: Saved? {
+        CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
+        guard let raw = UserDefaults.standard.dictionary(forKey: key),
+              let date = raw["date"] as? Date,
+              let section = raw["section"] as? String,
+              let index = raw["index"] as? Int,
+              let label = raw["label"] as? String,
+              let data = raw["item"] as? Data,
+              let item = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { return nil }
+        return Saved(date: date, section: section, index: index, guid: raw["guid"] as? Int, label: label, item: item)
     }
 
-    static func save(section: String, items: [[String: Any]]) throws {
-        let data = try PropertyListSerialization.data(fromPropertyList: items, format: .binary, options: 0)
-        UserDefaults.standard.set(["date": Date(), "section": section, "items": data], forKey: key)
+    static func save(tile: DockTile, original: [String: Any]) throws {
+        let data = try PropertyListSerialization.data(fromPropertyList: original, format: .binary, options: 0)
+        var raw: [String: Any] = ["date": Date(), "section": tile.section, "index": tile.index,
+                                  "label": tile.name, "item": data]
+        if let guid = tile.guid { raw["guid"] = guid }
+        UserDefaults.standard.set(raw, forKey: key)
+        CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
     }
 
-    /// Puts the backed-up Dock section back. Anything added to that section after the repair is lost.
-    static func restore() throws {
-        guard let saved = UserDefaults.standard.dictionary(forKey: key),
-              let section = saved["section"] as? String,
-              let data = saved["items"] as? Data,
-              let items = try PropertyListSerialization.propertyList(from: data, format: nil) as? [[String: Any]]
-        else { throw DockPrefsError.noBackup }
-        try DockPrefs.write(items, to: section)
+    /// Undoes the last repair. Returns the item's name.
+    @discardableResult
+    static func restore() throws -> String {
+        guard let saved else { throw DockPrefsError.noBackup }
+        defer { clear() }  // one undo only, and a vanished item can't be undone later either
+        try DockPrefs.restore(saved)
+        return saved.label
+    }
+
+    static func clear() {
         UserDefaults.standard.removeObject(forKey: key)
+        CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
     }
 }
 

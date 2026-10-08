@@ -15,6 +15,25 @@ enum DockProcess {
     /// The Dock belonging to this user. Other logged-in users (fast user switching) have their own Docks,
     /// so processes are filtered by uid as well as by name and path.
     static func current() -> DockInstance? {
+        newest(named: "Dock", pathSuffix: executableSuffix)
+    }
+
+    /// When this user's newest process called `name` started, e.g. "loginwindow" for the login session.
+    static func startTime(ofProcessNamed name: String) -> Date? {
+        newest(named: name, pathSuffix: nil)?.started
+    }
+
+    /// When this process started.
+    static func ownStartTime() -> Date? {
+        kinfo(getpid()).map(startDate)
+    }
+
+    private static func startDate(_ info: kinfo_proc) -> Date {
+        let tv = info.kp_proc.p_starttime
+        return Date(timeIntervalSince1970: TimeInterval(tv.tv_sec) + TimeInterval(tv.tv_usec) / 1_000_000)
+    }
+
+    private static func newest(named wanted: String, pathSuffix: String?) -> DockInstance? {
         let uid = getuid()
         let estimate = proc_listallpids(nil, 0)
         guard estimate > 0 else { return nil }
@@ -30,9 +49,9 @@ enum DockProcess {
             let name = withUnsafeBytes(of: info.kp_proc.p_comm) { raw in
                 String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
             }
-            guard name == "Dock", executablePath(pid)?.hasSuffix(executableSuffix) == true else { continue }
-            let tv = info.kp_proc.p_starttime
-            let started = Date(timeIntervalSince1970: TimeInterval(tv.tv_sec) + TimeInterval(tv.tv_usec) / 1_000_000)
+            guard name == wanted else { continue }
+            if let pathSuffix, executablePath(pid)?.hasSuffix(pathSuffix) != true { continue }
+            let started = startDate(info)
             if newest == nil || started > newest!.started {
                 newest = DockInstance(pid: pid, started: started)
             }

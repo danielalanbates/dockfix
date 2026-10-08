@@ -69,7 +69,10 @@ struct ContentView: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 6) {
                 List(model.rowsProblemsFirst) { row in
-                    RowView(row: row, searching: model.searching) { path in model.repair(row, to: path) }
+                    RowView(row: row, searching: model.searching, searchIncomplete: model.searchIncomplete) { path in
+                        model.repair(row, to: path)
+                    }
+                    .disabled(model.working)
                 }
                 .listStyle(.inset)
                 HStack {
@@ -77,8 +80,7 @@ struct ContentView: View {
                         ProgressView().controlSize(.small)
                         Text("Looking for moved apps…").font(.callout).foregroundStyle(.secondary)
                     } else {
-                        Text(model.problemCount == 0 ? "No broken items." : model.problemCount == 1 ? "1 broken item." : "\(model.problemCount) broken items.")
-                            .font(.callout).foregroundStyle(.secondary)
+                        Text(summary).font(.callout).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("Rescan") { model.refresh() }
@@ -90,15 +92,31 @@ struct ContentView: View {
         }
     }
 
+    private var summary: String {
+        var parts: [String] = []
+        switch model.problemCount {
+        case 0: parts.append("No broken items.")
+        case 1: parts.append("1 broken item.")
+        default: parts.append("\(model.problemCount) broken items.")
+        }
+        let offline = model.offlineDrives.map { "“\($0.name)”" }
+        if !offline.isEmpty {
+            parts.append("Apps on \(offline.joined(separator: ", ")) come back when \(offline.count == 1 ? "it's" : "they're") connected.")
+        }
+        return parts.joined(separator: " ")
+    }
+
     private var actions: some View {
         HStack {
             Button("Restart Dock") { model.restartDock(clearingIconCache: false) }
             Button("Clear Icon Cache and Restart Dock") { model.restartDock(clearingIconCache: true) }
                 .help("Use this when an item exists but its icon still shows “?”.")
             Spacer()
-            Button("Undo Last Repair") { model.undo() }
-                .disabled(!model.canUndo)
-                .help("Restores the Dock section as it was before the last repair.")
+            if let undoable = model.undoable {
+                Button("Undo Repair of “\(undoable.label)”") { model.undo() }
+                    .help("Puts “\(undoable.label)” back the way it was before the repair on "
+                          + "\(undoable.date.formatted(date: .abbreviated, time: .shortened)). Other Dock items are not touched.")
+            }
         }
         .disabled(model.working)
     }
@@ -107,6 +125,7 @@ struct ContentView: View {
 struct RowView: View {
     let row: Model.Row
     let searching: Bool
+    let searchIncomplete: Bool
     let repair: (String) -> Void
 
     var body: some View {
@@ -137,7 +156,10 @@ struct RowView: View {
         switch row.status {
         case .moved(let path): return "Now at \(path)"
         case .missing where !row.candidates.isEmpty: return "Found at \(row.candidates[0])"
-        case .missing where !searching: return "No other copy found on this Mac or connected drives"
+        case .missing where !searching:
+            return searchIncomplete ? "Not found in the folders searched (some drives are too big to search fully)"
+                                    : "No other copy found on this Mac or connected drives"
+        case .noAccess: return "Allow DockFix in System Settings › Privacy & Security to check this drive"
         default: return nil
         }
     }
@@ -145,7 +167,7 @@ struct RowView: View {
     private var color: Color {
         switch row.status {
         case .ok: return .green
-        case .driveNotConnected: return .secondary
+        case .driveNotConnected, .noAccess: return .secondary
         case .moved: return .orange
         case .missing: return .red
         case .notAFile: return .secondary

@@ -9,6 +9,10 @@ import os
 /// The Dock resolves its items once, when it starts. An item on a drive that was not mounted yet
 /// becomes "?" and stays that way after the drive appears. So: if a drive that holds Dock items
 /// mounted after the current Dock started, restart the Dock once.
+///
+/// Each mount is acted on at most once: every run records the mounts it has looked at
+/// (`SeenMounts`). Without that, a drive that mounted while it held no Dock items, and got one
+/// later (the Dock shows those fine), would make the next unrelated mount restart the Dock.
 enum Agent {
     static let log = Logger(subsystem: "org.batesai.dockfix", category: "agent")
 
@@ -28,15 +32,21 @@ enum Agent {
         let mounted: Bool
         let mountedAt: Date?
         let mountedAfterDock: Bool
+        /// An earlier check already handled this mount.
+        let alreadyHandled: Bool
 
         var name: String { (path as NSString).lastPathComponent }
+        var needsRestart: Bool { mountedAfterDock && !alreadyHandled }
     }
 
     struct Evaluation {
         let dock: DockInstance?
         let volumes: [VolumeCheck]
+        /// Every volume mounted when this evaluation ran (path → mount time). Only these get marked as
+        /// seen, so a drive that mounts while a check is in progress is still evaluated by the next one.
+        let mounted: [String: Double]
 
-        var stale: [VolumeCheck] { volumes.filter(\.mountedAfterDock) }
+        var stale: [VolumeCheck] { volumes.filter(\.needsRestart) }
     }
 
     static func evaluate() -> Evaluation {
@@ -47,19 +57,24 @@ enum Agent {
             }
         }
         let dock = DockProcess.current()
-        let mountPoints = counts.isEmpty ? [:] : Volumes.mountPoints()
+        let mountPoints = Volumes.mountPoints()
+        var mountedNow: [String: Double] = [:]
+        for (path, point) in mountPoints where point.isMountPoint && Volumes.isMounted(path) {
+            mountedNow[path] = point.created.timeIntervalSince1970
+        }
+        let seen = SeenMounts.load()
         let checks = counts.keys.sorted().map { volume -> VolumeCheck in
             let mounted = Volumes.isMounted(volume)
-            let point = mountPoints[volume]
-            let mountedAt = mounted && point?.isMountPoint == true ? point?.created : nil
+            let mountedAt = mountedNow[volume].map { Date(timeIntervalSince1970: $0) }
             var after = false
             if let dock, let mountedAt {
                 after = mountedAt > dock.started.addingTimeInterval(-raceWindow)
             }
+            let handled = mountedAt.map { SeenMounts.matches(seen[volume], $0) } ?? false
             return VolumeCheck(path: volume, itemCount: counts[volume] ?? 0, mounted: mounted,
-                               mountedAt: mountedAt, mountedAfterDock: after)
+                               mountedAt: mountedAt, mountedAfterDock: after, alreadyHandled: handled)
         }
-        return Evaluation(dock: dock, volumes: checks)
+        return Evaluation(dock: dock, volumes: checks, mounted: mountedNow)
     }
 
     static func run() -> Int32 {
@@ -80,6 +95,7 @@ enum Agent {
             }
             let stale = evaluation.stale
             guard let newest = stale.compactMap(\.mountedAt).max() else {
+                SeenMounts.record(evaluation.mounted)
                 log.info("nothing to do")
                 return 0
             }
@@ -94,11 +110,13 @@ enum Agent {
             let names = stale.map { "“\($0.name)”" }.joined(separator: ", ")
             guard History.recentRestarts(within: maxRestartsWindow) < maxRestarts else {
                 History.add("Skipped a Dock restart for \(names): already restarted \(maxRestarts) times in 10 minutes")
+                SeenMounts.record(evaluation.mounted)
                 log.error("restart cap reached")
                 return 0
             }
             History.recordRestart()
             let restarted = DockProcess.restart() != nil
+            SeenMounts.record(evaluation.mounted)
             History.add(restarted
                 ? "Restarted the Dock because \(names) connected after the Dock started"
                 : "Tried to restart the Dock for \(names), but no new Dock appeared within 15 seconds")
@@ -106,5 +124,27 @@ enum Agent {
             return 0
         }
         return 0
+    }
+}
+
+/// Mounts the background check has already looked at: mount-point path → mount time.
+enum SeenMounts {
+    private static let key = "seenMounts"
+
+    static func load() -> [String: Double] {
+        CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
+        return UserDefaults.standard.dictionary(forKey: key) as? [String: Double] ?? [:]
+    }
+
+    static func matches(_ seen: Double?, _ mountedAt: Date) -> Bool {
+        guard let seen else { return false }
+        return abs(seen - mountedAt.timeIntervalSince1970) < 0.001
+    }
+
+    /// Remembers the volumes a check evaluated (including ones without Dock items), replacing the old list
+    /// so unmounted drives drop out.
+    static func record(_ mounted: [String: Double]) {
+        UserDefaults.standard.set(mounted, forKey: key)
+        CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
     }
 }

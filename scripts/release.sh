@@ -17,17 +17,36 @@ ZIP="$BUILD/DockFix-$VERSION.zip"
 NOTES="$REPO/docs/releases/$VERSION.md"
 
 [ -f "$NOTES" ] || { echo "Write release notes first: $NOTES"; exit 1; }
+if ! codesign -dv --verbose=2 "$APP" 2>&1 | grep -q '^Authority=Developer ID Application'; then
+  echo "Not Developer ID signed (set DOCKFIX_SIGN_ID and rebuild). Refusing to publish." >&2
+  exit 1
+fi
+codesign --verify --strict "$APP"
+
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
+FINAL_NOTES="$BUILD/release-notes-$VERSION.md"
+cp "$NOTES" "$FINAL_NOTES"
+rm -f "$BUILD/notary.log"
+notarized=0
 if [ -n "${DOCKFIX_NOTARY_PROFILE:-}" ]; then
-  if xcrun notarytool submit "$ZIP" --keychain-profile "$DOCKFIX_NOTARY_PROFILE" --wait; then
-    xcrun stapler staple "$APP"
-    rm -f "$ZIP"
-    ditto -c -k --keepParent "$APP" "$ZIP"
-  else
-    echo "Notarization failed; releasing the signed but un-notarized zip." >&2
-  fi
+  # Log to a file first: grep -q on a pipe can SIGPIPE notarytool/tee and, with pipefail, hide a success.
+  xcrun notarytool submit "$ZIP" --keychain-profile "$DOCKFIX_NOTARY_PROFILE" --wait > "$BUILD/notary.log" 2>&1 || true
+  cat "$BUILD/notary.log"
+fi
+if grep -q 'status: Accepted' "$BUILD/notary.log" 2>/dev/null; then
+  xcrun stapler staple "$APP"
+  rm -f "$ZIP"
+  ditto -c -k --keepParent "$APP" "$ZIP"
+  notarized=1
+fi
+if [ "$notarized" = 0 ]; then
+  echo "Not notarized; adding first-open instructions to the release notes." >&2
+  cat >> "$FINAL_NOTES" <<'EOF'
+
+**First open:** this build is signed but not notarized by Apple, so macOS blocks the first launch. Open DockFix once, then go to System Settings › Privacy & Security and click **Open Anyway** next to the DockFix message.
+EOF
 fi
 
-gh release create "v$VERSION" "$ZIP" --repo "$GH_REPO" --title "DockFix $VERSION" --notes-file "$NOTES"
+gh release create "v$VERSION" "$ZIP" --repo "$GH_REPO" --title "DockFix $VERSION" --notes-file "$FINAL_NOTES"

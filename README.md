@@ -15,10 +15,12 @@ Copyright (c) 2026 Daniel Bates / Bates LLC. All rights reserved. · [batesai.or
 
 DockFix does not mount or reconnect drives. When a drive comes back (plugged in, or remounted by macOS), DockFix makes the Dock pick its apps up again.
 
+Repairs are careful by design: an item on a disconnected drive, on a drive DockFix isn't allowed to read, or whose app went to the Trash is never pointed at some other copy automatically. Each repair waits until the Dock has settled (a newly started Dock rewrites its item list about 5 seconds after launch, which would undo an edit made in that window), then checks that the change stuck.
+
 ## Using it
 
 - **Menu bar:** the Dock icon (▭ with a shelf) in the menu bar. It turns into a dashed "?" when an item needs repair. The panel shows broken items with a **Repair** button, the drives that hold Dock apps, the two switches, and Restart Dock / Clear Icon Cache.
-- **Window:** *Open DockFix…* lists every Dock item (broken ones first) with its status, repair choices, and **Undo Last Repair**.
+- **Window:** *Open DockFix…* lists every Dock item (broken ones first) with its status, repair choices, and **Undo Repair of “…”**, which puts back only the item last repaired.
 - **Switches:**
   - *Fix automatically when a drive connects* — the background check (below).
   - *Open DockFix at login* — keeps the menu bar icon after a restart.
@@ -32,9 +34,10 @@ A launchd job bundled inside the app (`Contents/Library/LaunchAgents/org.batesai
 1. Read the Dock's items (`com.apple.dock`: persistent-apps, persistent-others, recent-apps) and collect the external volumes they live on (`/Volumes/<name>/…`).
 2. For each of those volumes that is mounted, get **when it was mounted**: the creation time of its mount-point folder in `/Volumes`. `stat()` can't see that (it crosses into the mounted volume and reports the volume's own root), so DockFix lists `/Volumes` with `getattrlistbulk()`, which returns the covered mount-point directory. diskarbitrationd creates that folder right before mounting and deletes it on unmount.
 3. Get **when the current Dock started** (`sysctl KERN_PROC_PID`, this user's Dock only).
-4. If a volume mounted later than 3 s before the Dock started, the Dock may have missed it: wait until the mount is 5 s old, then restart the Dock (SIGTERM, same as `killall Dock`; launchd relaunches it).
+4. If a volume mounted later than 3 s before the Dock started, and no earlier check has handled that mount, the Dock may have missed it: wait until the mount is 5 s old, then restart the Dock (SIGTERM, same as `killall Dock`; launchd relaunches it).
+5. Remember every mount it looked at, so each mount is acted on at most once.
 
-The restarted Dock always starts more than 3 s after the mount, so the same mount can never trigger a second restart. A hard cap of 4 restarts per 10 minutes backs this up. Mounts of unrelated volumes (disk images, SD cards) are ignored.
+The restarted Dock always starts more than 3 s after the mount, and handled mounts are remembered, so the same mount can never trigger a second restart. A hard cap of 4 restarts per 10 minutes backs this up. Mounts of volumes without Dock apps (disk images, SD cards) never restart the Dock.
 
 ## Install
 
@@ -59,8 +62,8 @@ scripts/install.sh --enable                   # → /Applications, switches on, 
   --login-item on|off   open the menu bar app at login
   --restart-dock        restart the Dock
   --clear-icon-cache    delete the Dock icon cache and restart the Dock
-  --repair NAME [PATH]  repoint a Dock item (default: best copy found)
-  --undo-repair         restore the Dock section saved before the last repair
+  --repair NAME [PATH]  repoint a broken Dock item (default: the copy its bookmark or bundle ID finds)
+  --undo-repair         put the last repaired item back as it was (other items untouched)
   --menubar             start the menu bar app without opening the window
 ```
 
@@ -70,7 +73,7 @@ Turn off both switches (or `DockFix --disable` and `DockFix --login-item off`), 
 
 ## Privacy
 
-DockFix makes no network connections and collects nothing. It reads the Dock's preferences and the list of mounted volumes, and writes only the Dock preferences (on Repair/Undo) and its own preferences (`org.batesai.dockfix`: recent activity and the last repair backup).
+DockFix makes no network connections and collects nothing. It reads the Dock's preferences and the list of mounted volumes, and writes only the Dock preferences (on Repair/Undo) and its own preferences (`org.batesai.dockfix`: recent activity, the mounts it has handled, and the item saved before the last repair).
 
 ## Requirements
 
