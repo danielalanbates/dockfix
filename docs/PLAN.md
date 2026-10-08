@@ -127,7 +127,14 @@ Round 4 (one reviewer, self-verified) on the round-3 commit found no logic bugs 
 | Auto-remount a drive that is attached but unmounted (`diskutil mount` / `DADiskMount`) | Asked for 2026-10-08; can't tell a user eject from a drop-off. Would be opt-in, and only for disks still present on the bus |
 | Auto-repair moved apps | Risk of pointing at the wrong copy (duplicates exist); keep it one click |
 | Use dockutil for edits | Extra dependency; the three keys it would write are simple |
-| Notarized release | Apple developer agreement was expired as of 2026-10-02; release.sh tries the configured notary profile and falls back to signed-only |
+
+## Releases
+
+| Version | Date | Notes |
+|---|---|---|
+| [1.0.0](https://github.com/danielalanbates/dockfix/releases/tag/v1.0.0) | 2026-10-08 | Developer ID signed, notarized and stapled (`spctl`: Notarized Developer ID) |
+
+`release.sh` falls back to signed-only with "Open Anyway" instructions if notarization fails.
 
 ## Release process
 
