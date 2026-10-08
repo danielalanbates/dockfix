@@ -1,0 +1,15 @@
+# Local machine settings (signing identity, notary profile)
+config.local.sh
+# Build output lives in ~/Downloads/dockfix-build; never commit binaries
+build/
+obj/
+*.app
+*.zip
+*.dmg
+# Secrets
+*.p8
+*.p12
+.env
+secrets*
+# macOS
+.DS_Store

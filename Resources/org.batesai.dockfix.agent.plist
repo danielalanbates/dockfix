@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  DockFix background check. Registered by the app with SMAppService (it lives inside the bundle at
+  Contents/Library/LaunchAgents). launchd starts it at login and each time a filesystem mounts; it
+  decides within seconds and exits. No KeepAlive, no polling.
+-->
+<dict>
+	<key>Label</key>
+	<string>org.batesai.dockfix.agent</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/DockFix</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>DockFix</string>
+		<string>--agent</string>
+	</array>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>org.batesai.dockfix</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StartOnMount</key>
+	<true/>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>
