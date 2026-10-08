@@ -21,24 +21,39 @@ struct DockFixApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    static let showWindowNotification = Notification.Name("org.batesai.dockfix.showWindow")
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // One copy only. The login job starts DockFix with --menubar even if it's already running
+        // (e.g. right after "Open at login" is switched on); a copy opened by hand asks the running
+        // one to show its window.
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .filter { $0.processIdentifier != getpid() && $0.activationPolicy != .prohibited }
+        if !others.isEmpty {
+            if !CommandLine.arguments.contains("--menubar") {
+                DistributedNotificationCenter.default().postNotificationName(
+                    Self.showWindowNotification, object: nil, userInfo: nil, deliverImmediately: true)
+            }
+            exit(0)
+        }
+        DistributedNotificationCenter.default().addObserver(
+            forName: Self.showWindowNotification, object: nil, queue: .main) { _ in
+            Task { @MainActor in MainWindow.shared.show() }
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AgentService.migrateLoginItem()
         if !launchedQuietly { MainWindow.shared.show(activate: false) }  // a normal launch already comes forward
     }
 
-    /// Stay in the menu bar only when started at login or by `open … --args --menubar`.
+    /// Stay in the menu bar only when started by the login job (--menubar) or by macOS as a login item.
     private var launchedQuietly: Bool {
         if CommandLine.arguments.contains("--menubar") { return true }
         // The 'oapp' event is only available here, inside applicationDidFinishLaunching.
         let event = NSAppleEventManager.shared().currentAppleEvent
-        if event?.eventID == kAEOpenApplication,
-           event?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem {
-            return true
-        }
-        // Fallback in case the login flag is missing: started within two minutes of this user logging in.
-        if let login = DockProcess.startTime(ofProcessNamed: "loginwindow"), let me = DockProcess.ownStartTime() {
-            return me.timeIntervalSince(login) < 120
-        }
-        return false
+        return event?.eventID == kAEOpenApplication
+            && event?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

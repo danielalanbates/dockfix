@@ -45,6 +45,10 @@ Detach the test image, remove the test tile and `killall Dock`, then attach the 
 | tile on the test image, image detached | OFFLINE; `--repair` refuses |
 | `scripts/render_previews.sh repair` | renders the panel/window with a Repair button, then repairs through the model: "after repair: broken = 0" |
 
+## 5b. Login launch and single instance
+
+Quit DockFix from its menu (`osascript -e 'tell application id "org.batesai.dockfix" to quit'`), then `launchctl kickstart gui/$(id -u)/org.batesai.dockfix.menubar`. Expect exactly one `DockFix --menubar` process, no DockFix windows on screen, and the menu bar icon. Kickstart again while it runs: still one process (the second copy exits).
+
 ## 6. UI
 
 `scripts/render_previews.sh` writes `~/Downloads/dockfix-build/previews/{menu-panel,window}-{light,dark}.png`. Check: broken items listed first with Repair, switches right-aligned, drives line, no clipped text.

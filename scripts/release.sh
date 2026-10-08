@@ -17,7 +17,9 @@ ZIP="$BUILD/DockFix-$VERSION.zip"
 NOTES="$REPO/docs/releases/$VERSION.md"
 
 [ -f "$NOTES" ] || { echo "Write release notes first: $NOTES"; exit 1; }
-if ! codesign -dv --verbose=2 "$APP" 2>&1 | grep -q '^Authority=Developer ID Application'; then
+# Capture first: piping codesign into grep -q under pipefail fails with SIGPIPE even on a match.
+signature=$(codesign -dv --verbose=2 "$APP" 2>&1 || true)
+if ! grep -q '^Authority=Developer ID Application' <<<"$signature"; then
   echo "Not Developer ID signed (set DOCKFIX_SIGN_ID and rebuild). Refusing to publish." >&2
   exit 1
 fi

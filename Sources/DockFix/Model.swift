@@ -2,7 +2,6 @@
 
 import AppKit
 import Foundation
-import ServiceManagement
 
 /// State shared by the menu bar panel and the window. Refreshes when the panel or window opens and
 /// when a drive mounts or unmounts or the Mac wakes. No timers.
@@ -26,6 +25,8 @@ final class Model: ObservableObject {
     @Published var openAtLogin = false
     @Published var history: [History.Entry] = []
     @Published var undoable: Backup.Saved?
+    /// True from refresh() until the first results are on screen.
+    @Published var loading = false
     @Published var searching = false
     @Published var searchIncomplete = false
     @Published var working = false
@@ -72,12 +73,13 @@ final class Model: ObservableObject {
 
     func refresh() {
         agentState = AgentService.state
-        openAtLogin = SMAppService.mainApp.status == .enabled
+        openAtLogin = AgentService.opensAtLogin
         history = History.load()
         undoable = Backup.saved
 
         generation += 1
         let current = generation
+        loading = true
         // Keep earlier search results on screen while the new check runs, so Repair buttons don't flicker.
         let previous = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
@@ -96,6 +98,7 @@ final class Model: ObservableObject {
                 guard current == self.generation else { return false }  // a newer refresh is under way
                 self.drives = drives
                 self.rows = fresh
+                self.loading = false
                 self.searching = !missing.isEmpty
                 return true
             }
@@ -126,16 +129,12 @@ final class Model: ObservableObject {
 
     func setOpenAtLogin(_ enabled: Bool) {
         do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
+            try AgentService.setOpenAtLogin(enabled)
             note = nil
         } catch {
             note = "Could not change Open at Login: \(error.localizedDescription)"
         }
-        openAtLogin = SMAppService.mainApp.status == .enabled
+        openAtLogin = AgentService.opensAtLogin
     }
 
     func repair(_ row: Row, to path: String) {

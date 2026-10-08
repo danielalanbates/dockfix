@@ -42,6 +42,34 @@ enum AgentService {
     static func openLoginItemsSettings() {
         SMAppService.openSystemSettingsLoginItems()
     }
+
+    // MARK: Open at login
+
+    /// A second bundled job that starts the menu bar app with --menubar, so no window opens at login.
+    /// (SMAppService.mainApp can't pass arguments, and its "launched at login" flag isn't dependable.)
+    static let loginPlistName = "org.batesai.dockfix.menubar.plist"
+    static var loginItem: SMAppService { SMAppService.agent(plistName: loginPlistName) }
+    static var opensAtLogin: Bool { loginItem.status == .enabled }
+
+    static func setOpenAtLogin(_ enabled: Bool) throws {
+        retireMainAppLoginItem()
+        if enabled {
+            try loginItem.register()
+        } else {
+            try loginItem.unregister()
+        }
+    }
+
+    /// Builds before 2026-10-08 evening registered the app itself as the login item; move to the job above.
+    static func migrateLoginItem() {
+        guard SMAppService.mainApp.status == .enabled else { return }
+        retireMainAppLoginItem()
+        try? loginItem.register()
+    }
+
+    private static func retireMainAppLoginItem() {
+        if SMAppService.mainApp.status == .enabled { try? SMAppService.mainApp.unregister() }
+    }
 }
 
 /// Recent background activity, shown in the window and by --status. Kept in DockFix's preferences.

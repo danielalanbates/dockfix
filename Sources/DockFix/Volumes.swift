@@ -24,12 +24,30 @@ enum Volumes {
 
     /// True when a filesystem is mounted exactly at `path` (an empty leftover folder does not count).
     static func isMounted(_ path: String) -> Bool {
-        var info = statfs()
-        guard statfs(path, &info) == 0 else { return false }
-        let mountedOn = withUnsafeBytes(of: info.f_mntonname) { raw in
-            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        mountedPaths().contains(path)
+    }
+
+    /// Mount points from the kernel's cached mount table. MNT_NOWAIT never asks the filesystems
+    /// themselves, so a dead network share can't stall the check (statfs() on it can block).
+    /// (getfsstat with our own buffer rather than getmntinfo, whose static buffer isn't thread-safe.)
+    static func mountedPaths() -> Set<String> {
+        let estimate = getfsstat(nil, 0, MNT_NOWAIT)
+        guard estimate > 0 else { return [] }
+        let capacity = Int(estimate) + 8
+        let bytes = capacity * MemoryLayout<statfs>.stride
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: bytes, alignment: MemoryLayout<statfs>.alignment)
+        defer { raw.deallocate() }
+        raw.initializeMemory(as: UInt8.self, repeating: 0, count: bytes)
+        let table = raw.bindMemory(to: statfs.self, capacity: capacity)
+        let count = getfsstat(table, Int32(bytes), MNT_NOWAIT)
+        guard count > 0 else { return [] }
+        var paths = Set<String>()
+        for index in 0..<Int(count) {
+            paths.insert(withUnsafeBytes(of: table[index].f_mntonname) { name in
+                String(decoding: name.prefix { $0 != 0 }, as: UTF8.self)
+            })
         }
-        return mountedOn == path
+        return paths
     }
 
     /// Every entry in /Volumes with the creation time of the mount-point directory itself.

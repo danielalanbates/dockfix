@@ -15,8 +15,9 @@ enum DockEditor {
 
     static func waitForSettledDock() {
         guard let dock = DockProcess.current() else { return }
-        let age = Date().timeIntervalSince(dock.started)
-        if age < settledAge { Thread.sleep(forTimeInterval: settledAge - age) }
+        let remaining = settledAge - Date().timeIntervalSince(dock.started)
+        // Bounded: if the clock was set back after the Dock started, its age looks negative.
+        if remaining > 0 { Thread.sleep(forTimeInterval: min(remaining, settledAge)) }
     }
 
     /// Repoints `tile`, clears the icon cache and restarts the Dock. Returns false if the Dock still
@@ -35,20 +36,29 @@ enum DockEditor {
     }
 
     /// Undoes the last repair and restarts the Dock. Returns the item's name and whether it stuck.
+    /// The backup is kept until the undo is confirmed, so a failed undo can be tried again.
     static func undo() throws -> (name: String, ok: Bool) {
         waitForSettledDock()
         guard let saved = Backup.saved else { throw DockPrefsError.noBackup }
         let wanted = (saved.item["tile-data"] as? [String: Any]).flatMap(DockPrefs.filePath(of:))
         let probe = DockTile(section: saved.section, index: saved.index, guid: saved.guid, label: saved.label,
                              bundleID: nil, path: nil, bookmark: nil)
-        let name = try Backup.restore()
+        do {
+            try DockPrefs.restore(saved)
+        } catch DockPrefsError.tileNotFound(let name) {
+            Backup.clear()  // the item is gone from the Dock; nothing left to undo
+            throw DockPrefsError.tileNotFound(name)
+        }
         for attempt in 0..<2 {
             IconCache.clear()
             DockProcess.restart()
             waitForSettledDock()
-            if DockPrefs.currentPath(of: probe) == wanted { return (name, true) }
+            if DockPrefs.currentPath(of: probe) == wanted {
+                Backup.clear()
+                return (saved.label, true)
+            }
             if attempt == 0 { try DockPrefs.restore(saved) }
         }
-        return (name, false)
+        return (saved.label, false)
     }
 }

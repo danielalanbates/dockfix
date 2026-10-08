@@ -23,7 +23,7 @@ Repairs are careful by design: an item on a disconnected drive, on a drive DockF
 - **Window:** *Open DockFix…* lists every Dock item (broken ones first) with its status, repair choices, and **Undo Repair of “…”**, which puts back only the item last repaired.
 - **Switches:**
   - *Fix automatically when a drive connects* — the background check (below).
-  - *Open DockFix at login* — keeps the menu bar icon after a restart.
+  - *Open DockFix at login* — keeps the menu bar icon after a restart (starts in the menu bar only, no window).
 
 Quitting the menu bar app does not stop the automatic fix; turn the switch off for that.
 

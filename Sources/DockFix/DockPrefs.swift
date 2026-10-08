@@ -172,15 +172,6 @@ enum Backup {
         CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
     }
 
-    /// Undoes the last repair. Returns the item's name.
-    @discardableResult
-    static func restore() throws -> String {
-        guard let saved else { throw DockPrefsError.noBackup }
-        defer { clear() }  // one undo only, and a vanished item can't be undone later either
-        try DockPrefs.restore(saved)
-        return saved.label
-    }
-
     static func clear() {
         UserDefaults.standard.removeObject(forKey: key)
         CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)

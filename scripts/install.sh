@@ -14,16 +14,21 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="${DOCKFIX_BUILD_DIR:-$HOME/Downloads/dockfix-build}"
 APP="$BUILD/DockFix.app"
 DEST="/Applications/DockFix.app"
-GUI_PATTERN="^$DEST/Contents/MacOS/DockFix( --menubar)?\$"
+# The menu bar app, however it was started (Finder, open, or the login job, whose argv[0] is just
+# "DockFix"). The background check (--agent) and CLI runs are not matched.
+GUI_PATTERN='(^|/)DockFix( --menubar)?$'
+gui_running() { pgrep -f "$GUI_PATTERN" >/dev/null; }
 
 [ -d "$APP" ] || { echo "Build first: scripts/build.sh"; exit 1; }
 
 was_running=0
-if pgrep -f "$GUI_PATTERN" >/dev/null; then
+if gui_running; then
   was_running=1
   osascript -e 'tell application id "org.batesai.dockfix" to quit' >/dev/null 2>&1 || true
-  for _ in $(seq 1 20); do pgrep -f "$GUI_PATTERN" >/dev/null || break; sleep 0.25; done
-  if pgrep -f "$GUI_PATTERN" >/dev/null; then
+  for _ in $(seq 1 20); do gui_running || break; sleep 0.25; done
+  gui_running && pkill -TERM -f "$GUI_PATTERN" || true   # our own app only
+  for _ in $(seq 1 20); do gui_running || break; sleep 0.25; done
+  if gui_running; then
     echo "DockFix is still running; quit it from its menu bar icon and run this again."
     exit 1
   fi
@@ -49,6 +54,6 @@ fi
 
 if [ "$was_running" = 1 ]; then
   # -g: start in the background without taking focus. One instance only.
-  pgrep -f "$GUI_PATTERN" >/dev/null || open -g -a "$DEST" --args --menubar
+  gui_running || open -g -a "$DEST" --args --menubar
   echo "Menu bar app running."
 fi

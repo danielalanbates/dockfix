@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Daniel Bates / Bates LLC. All rights reserved. See LICENSE.
 
 import Foundation
-import ServiceManagement
 
 enum CLI {
     static let usage = """
@@ -91,16 +90,12 @@ enum CLI {
 
     private static func setLoginItem(_ enabled: Bool) -> Int32 {
         do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
+            try AgentService.setOpenAtLogin(enabled)
         } catch {
             print("Could not change Open at Login: \(error.localizedDescription)")
             return 1
         }
-        print("Open at login: \(SMAppService.mainApp.status == .enabled ? "on" : "off")")
+        print("Open at login: \(AgentService.opensAtLogin ? "on" : "off")")
         return 0
     }
 
@@ -163,7 +158,7 @@ enum CLI {
 
         print("DockFix \(version)")
         print("Background check: \(AgentService.state.description)")
-        print("Open at login: \(SMAppService.mainApp.status == .enabled ? "on" : "off")")
+        print("Open at login: \(AgentService.opensAtLogin ? "on" : "off")")
         if let dock = evaluation.dock {
             print("Dock: pid \(dock.pid), started \(formatter.string(from: dock.started))")
         } else {

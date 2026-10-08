@@ -38,7 +38,7 @@ func waitForSearch() {
     let deadline = Date().addingTimeInterval(20)
     repeat {
         RunLoop.main.run(until: Date().addingTimeInterval(0.25))
-    } while Model.shared.searching && Date() < deadline
+    } while (Model.shared.loading || Model.shared.searching) && Date() < deadline
 }
 
 MainActor.assumeIsolated {

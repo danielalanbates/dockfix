@@ -38,9 +38,10 @@ lipo -create -output "$APP/Contents/MacOS/DockFix" "$OBJ"/bin/DockFix-*
 cp "$SRC/Resources/Info.plist" "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 cp "$SRC/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
-cp "$SRC/Resources/org.batesai.dockfix.agent.plist" "$APP/Contents/Library/LaunchAgents/"
+cp "$SRC/Resources/org.batesai.dockfix.agent.plist" "$SRC/Resources/org.batesai.dockfix.menubar.plist" \
+  "$APP/Contents/Library/LaunchAgents/"
 cp "$SRC/LICENSE" "$APP/Contents/Resources/LICENSE"
-plutil -lint -s "$APP/Contents/Info.plist" "$APP/Contents/Library/LaunchAgents/org.batesai.dockfix.agent.plist"
+plutil -lint -s "$APP/Contents/Info.plist" "$APP"/Contents/Library/LaunchAgents/*.plist
 
 if [ "$SIGN_ID" = "-" ]; then
   codesign --force --sign - "$APP"

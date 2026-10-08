@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  "Open DockFix at login". Starts the menu bar app with the menubar flag so no window opens at login.
+  Registered by the app with SMAppService (Contents/Library/LaunchAgents). Not kept alive: quitting
+  DockFix from its menu keeps it quit until the next login. A second copy started while one is
+  running exits at once.
+-->
+<dict>
+	<key>Label</key>
+	<string>org.batesai.dockfix.menubar</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/DockFix</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>DockFix</string>
+		<string>--menubar</string>
+	</array>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>org.batesai.dockfix</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>

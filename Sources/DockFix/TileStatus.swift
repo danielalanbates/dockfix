@@ -8,8 +8,8 @@ enum TileStatus: Equatable {
     case ok
     /// The item lives on a drive that is not connected. Nothing to repair; it comes back with the drive.
     case driveNotConnected(String)
-    /// macOS privacy settings stop DockFix from reading the item's drive or folder. The Dock itself may be
-    /// fine, and DockFix must not "repair" it to some other copy.
+    /// DockFix can't read the item's drive or folder (permissions, privacy settings, or a failing or
+    /// unreachable drive). The Dock itself may be fine, and DockFix must not "repair" it to another copy.
     case noAccess(String)
     /// The saved path is gone but the Dock's bookmark still finds this exact item at a new path.
     case moved(String)
@@ -53,7 +53,7 @@ enum TileStatus: Equatable {
         switch FileCheck.check(path) {
         case .exists:
             return .ok
-        case .denied:
+        case .unreadable:
             return .noAccess(Volumes.volumeRoot(of: path).map { ($0 as NSString).lastPathComponent }
                              ?? ((path as NSString).deletingLastPathComponent as NSString).lastPathComponent)
         case .absent:
@@ -80,14 +80,18 @@ enum TileStatus: Equatable {
     }
 }
 
-/// Tells "not there" apart from "not allowed to look" — FileManager.fileExists reports both as false.
+/// Tells "not there" apart from "can't look" — FileManager.fileExists reports both as false.
 enum FileCheck {
-    case exists, absent, denied
+    /// `unreadable`: permissions, privacy settings, or a failing/unreachable drive (EIO, ETIMEDOUT, …).
+    case exists, absent, unreadable
 
     static func check(_ path: String) -> FileCheck {
         var info = stat()
-        if stat(path, &info) == 0 { return .exists }
-        return errno == EACCES || errno == EPERM ? .denied : .absent
+        let result = stat(path, &info)
+        let error = errno
+        if result == 0 { return .exists }
+        // Only "no such file" means absent; anything else must never lead to a repair.
+        return error == ENOENT || error == ENOTDIR ? .absent : .unreadable
     }
 }
 

@@ -58,13 +58,14 @@ enum Agent {
         }
         let dock = DockProcess.current()
         let mountPoints = Volumes.mountPoints()
+        let mountTable = Volumes.mountedPaths()
         var mountedNow: [String: Double] = [:]
-        for (path, point) in mountPoints where point.isMountPoint && Volumes.isMounted(path) {
+        for (path, point) in mountPoints where point.isMountPoint && mountTable.contains(path) {
             mountedNow[path] = point.created.timeIntervalSince1970
         }
         let seen = SeenMounts.load()
         let checks = counts.keys.sorted().map { volume -> VolumeCheck in
-            let mounted = Volumes.isMounted(volume)
+            let mounted = mountTable.contains(volume)
             let mountedAt = mountedNow[volume].map { Date(timeIntervalSince1970: $0) }
             var after = false
             if let dock, let mountedAt {
@@ -110,7 +111,9 @@ enum Agent {
             let names = stale.map { "“\($0.name)”" }.joined(separator: ", ")
             guard History.recentRestarts(within: maxRestartsWindow) < maxRestarts else {
                 History.add("Skipped a Dock restart for \(names): already restarted \(maxRestarts) times in 10 minutes")
-                SeenMounts.record(evaluation.mounted)
+                // Leave the skipped mounts unhandled so a later check (and the menu) can still act on them.
+                let skipped = Set(stale.map(\.path))
+                SeenMounts.record(evaluation.mounted.filter { !skipped.contains($0.key) })
                 log.error("restart cap reached")
                 return 0
             }

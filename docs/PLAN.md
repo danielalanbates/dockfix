@@ -23,7 +23,7 @@ The author's Dock kept showing "?" for apps. Diagnosis (macOS 27.0.1, MacBook, a
 | `Sources/DockFix/AgentService.swift` | SMAppService wrapper + activity history |
 | `Sources/DockFix/App.swift`, `Model.swift`, `MenuPanel.swift`, `MainWindowView.swift` | Menu bar app and window |
 | `Sources/DockFix/CLI.swift` | Command-line interface |
-| `Resources/` | Info.plist (LSUIElement), launchd job plist, AppIcon.icns |
+| `Resources/` | Info.plist (LSUIElement), the two launchd job plists (background check; Open at Login with `--menubar`), AppIcon.icns |
 | `scripts/` | build, install, release, icon, offscreen UI renderer |
 | `tests/RenderPreviews/` | Offscreen renderer of the panel and window (and a scripted Repair press) |
 | `archive/` | Code that was tried and did not work (empty so far) |
@@ -62,11 +62,27 @@ Build output never goes in the repo: `~/Downloads/dockfix-build/` (app, archive 
 | `--repair` refuses OK items, items on a disconnected drive, and unreadable (chmod 000) folders | pass |
 | Bookmark resolving into `.Trashes` → MISSING with the real copy offered, not "moved to Trash" | pass |
 
-Not verified by machine: real mouse clicks in the panel/window (the same model calls were exercised), and that a launch **at login** keeps the window closed. Two checks guard it: the `keyAELaunchedAsLogInItem` flag on the open event (read in `applicationDidFinishLaunching`, where it is available) and, as a fallback, DockFix starting within 2 minutes of this user's `loginwindow`. If the window still opens at every login, start the login item with `--menubar` instead: switch Open at Login from `SMAppService.mainApp` to a second bundled LaunchAgent whose `ProgramArguments` include `--menubar`.
+Not verified by machine: real mouse clicks in the panel/window (the same model calls were exercised), and a real logout/login. A login launch was simulated with `launchctl kickstart gui/$UID/org.batesai.dockfix.menubar`: one instance, `--menubar`, no window, menu bar icon present.
+
+- **Open at Login is a second bundled LaunchAgent** (`org.batesai.dockfix.menubar`, `ProgramArguments` = `DockFix --menubar`), not `SMAppService.mainApp`: mainApp can't pass arguments and its "launched as login item" Apple-event flag isn't dependable, so the window could open at every login. Registering the job runs it at once (RunAtLoad); a second copy finds the first via `NSRunningApplication` and exits. A copy opened by hand while one runs posts a distributed notification so the running one shows its window. Builds that registered mainApp are migrated on launch (`AgentService.migrateLoginItem`).
+- **Mount checks use the kernel's cached mount table** (`getfsstat(MNT_NOWAIT)`), never `statfs()` per volume, so a dead network share can't stall the check.
 
 ## Review (2026-10-08)
 
 Three Claude reviewers (agent safety; Dock prefs and repair; app, UI and scripts) reported 17 findings; the verifier agent failed on a network error, so each finding was checked by hand against the code. All 17 held up (14 distinct); all were fixed and retested, see the table above. The free-model reviews (Gemini Pro: HTTP 429 on the free tier; OpenRouter free models: 403/timeouts/DNS errors) did not complete.
+
+Round 2 reviewed the fix commit (one reviewer + one skeptic; all 8 findings confirmed and fixed):
+
+| Finding | Fix |
+|---|---|
+| release.sh Developer ID gate always failed (`codesign | grep -q` under pipefail → SIGPIPE) | capture output first, `|| true`, then grep |
+| Undo deleted its backup before verifying | backup cleared only after a verified undo (or when the item is gone) |
+| Restart-cap path marked skipped mounts as handled | cap path records only non-stale mounts |
+| loginwindow-age heuristic hid the window on a manual launch right after login | removed; login uses the `--menubar` job |
+| EIO/ETIMEDOUT etc. counted as "absent" → repair offered | only ENOENT/ENOTDIR are absent; everything else is "can't read" |
+| `statfs` on every /Volumes entry could block on dead shares | cached mount table (`getfsstat MNT_NOWAIT`) |
+| Settle wait unbounded if the clock moved back | capped at 8 s |
+| Preview harness could snapshot before rows loaded | `Model.loading` flag |
 
 ## Known limits
 
